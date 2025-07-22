@@ -755,25 +755,55 @@ def _generate_generic_fake_data(pii_type, original_value):
             'general health consultation',
             'clinical review and planning',
             'medical evaluation and care planning',
-            'health status assessment',
-            'difficulty with daily activities',
-            'requires assistance with tasks',
-            'independent in daily activities',
-            'minimal assistance needed'
+            'health status assessment'
+        ],
+        'SLEEP_PATTERN': [
+            'regular sleep schedule',
+            'restful sleep throughout night',
+            'occasional sleep interruptions',
+            'early morning awakening',
+            'difficulty falling asleep',
+            'frequent nighttime awakenings',
+            'excessive daytime sleepiness',
+            'normal sleep patterns',
+            'light sleep',
+            'deep sleep cycles'
+        ],
+        'PSYCHIATRIC_SYMPTOM': [
+            'mild symptoms during adjustment period',
+            'symptoms well-controlled with treatment',
+            'occasional mild symptoms',
+            'improving symptoms with therapy',
+            'stable mood and behavior',
+            'periodic mild symptoms',
+            'symptoms responding to treatment',
+            'manageable symptoms with support',
+            'minimal symptoms observed',
+            'symptoms stable on current regimen'
+        ],
+        'DAILY_ACTIVITY': [
+            'requires minimal assistance',
+            'independent with supervision',
+            'needs occasional support',
+            'manages with adaptive equipment',
+            'performs activity with reminders',
+            'completes task independently',
+            'requires setup assistance only',
+            'needs verbal cuing',
+            'independent in familiar settings',
+            'manages with written instructions'
         ],
         'MEDICAL_CONDITION': [
-            'regular sleep patterns',
-            'occasional sleep disturbance',
-            'restful sleep',
-            'interrupted sleep patterns',
-            'stable mood',
-            'mild mood changes',
-            'no significant symptoms',
-            'manageable symptoms',
-            'improving symptoms',
-            'stable condition',
-            'periodic symptoms',
-            'controlled symptoms'
+            'condition stable',
+            'symptoms well-managed',
+            'improving with treatment',
+            'regular monitoring in place',
+            'no acute concerns',
+            'managed with medication',
+            'stable on current regimen',
+            'periodic evaluation scheduled',
+            'responding well to therapy',
+            'condition unchanged'
         ],
         'MEDICATION': [
             'Acetaminophen 500mg',
@@ -897,16 +927,21 @@ def determine_pii_type_from_key(key):
     elif 'date' in key_lower:
         return 'DATE'
     elif any(x in key_lower for x in ['diagnosis', 'condition', 'disorder', 'syndrome', 
-                                      'disease', 'illness', 'impairment', 'challenge']):
+                                      'disease', 'illness', 'impairment']):
         return 'DIAGNOSIS'
-    elif any(x in key_lower for x in ['symptom', 'symptoms', 'pattern', 'patterns',
-                                      'anxiety', 'depression', 'delusion', 'hallucination',
+    elif 'challenge' in key_lower and 'cognitive' in key_lower:
+        return 'DIAGNOSIS'  # Cognitive challenges are diagnoses
+    elif 'sleep' in key_lower and 'pattern' in key_lower:
+        return 'SLEEP_PATTERN'
+    elif any(x in key_lower for x in ['anxiety', 'depression', 'delusion', 'hallucination',
                                       'apathy', 'agitation', 'irritability']):
+        return 'PSYCHIATRIC_SYMPTOM'
+    elif 'symptom' in key_lower:
         return 'MEDICAL_CONDITION'
     elif any(x in key_lower for x in ['activities', 'living', 'laundry', 'shopping',
                                       'housekeeping', 'communication', 'transportation',
                                       'food_preparation', 'managing_finances', 'managing_medications']):
-        return 'CLINICAL_NOTE'
+        return 'DAILY_ACTIVITY'
     elif any(x in key_lower for x in ['phone', 'tel', 'mobile', 'cell']):
         return 'PHONE_NUMBER'
     elif 'email' in key_lower:
