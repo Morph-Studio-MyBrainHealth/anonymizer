@@ -444,13 +444,369 @@ def de_anonymizer(identity, identityType, conversation, context=None):
         }
 
 
+def anonymize_json(identity, identityType, json_data, context=None):
+    """
+    Anonymize JSON data recursively while preserving structure.
+    
+    Args:
+        identity: The identifier for the entity
+        identityType: The type of the identity
+        json_data: JSON string or dict to anonymize
+        context: Optional context for audit logging
+    
+    Returns:
+        dict: Response with anonymized JSON
+    """
+    try:
+        # Parse JSON if string
+        if isinstance(json_data, str):
+            data = json.loads(json_data)
+        else:
+            data = json_data
+            
+        masterid = get_piimaster_uuid(identity, identityType)
+        
+        # Log JSON anonymization
+        log_phi_access(masterid, 'ANONYMIZE_JSON', 'json_data', context)
+        
+        # Get existing PII data for user
+        rows = get_piientity_data(masterid)
+        
+        # Recursively anonymize the JSON
+        anonymized_data, records = _anonymize_json_recursive(data, masterid, rows)
+        
+        # Bulk insert new PII mappings
+        if records:
+            bulk_insert_piientity(records)
+            
+        # Store anonymization record
+        metadata = {
+            'gdpr_purpose': context.get('purpose') if context else None,
+            'gdpr_legal_basis': 'Article 9(2)(h)' if context else None,
+            'entities_processed': len(records),
+            'data_type': 'json'
+        }
+        insert_piidata(masterid, json.dumps(data), json.dumps(anonymized_data), 
+                      'ANONYMIZE_JSON', metadata=json.dumps(metadata))
+        
+        # Log success
+        audit_logger.log_success({
+            'masterid': masterid,
+            'action': 'ANONYMIZE_JSON',
+            'entities_processed': len(records),
+            'timestamp': datetime.datetime.utcnow().isoformat()
+        })
+        
+        return {
+            "statusCode": 200,
+            "body": json.dumps({
+                "result": anonymized_data,
+                "entities_detected": len(records),
+                "compliance": {
+                    "hipaa_safe_harbor": True,
+                    "gdpr_pseudonymized": True
+                }
+            })
+        }
+        
+    except Exception as e:
+        logger.error(e)
+        audit_logger.log_error({
+            'action': 'ANONYMIZE_JSON',
+            'error': str(e),
+            'timestamp': datetime.datetime.utcnow().isoformat()
+        })
+        return {
+            "statusCode": 500,
+            "error": f"Error: {e}"
+        }
+
+
+def _anonymize_json_recursive(data, masterid, existing_rows, records=None):
+    """
+    Recursively anonymize JSON data, handling nested structures.
+    """
+    if records is None:
+        records = []
+        
+    if isinstance(data, dict):
+        anonymized = {}
+        for key, value in data.items():
+            # Check if the key itself indicates a type of data
+            if should_anonymize_key(key):
+                anonymized[key], new_records = _anonymize_value(
+                    key, value, masterid, existing_rows, records
+                )
+                records.extend(new_records)
+            else:
+                anonymized[key], _ = _anonymize_json_recursive(
+                    value, masterid, existing_rows, records
+                )
+        return anonymized, records
+        
+    elif isinstance(data, list):
+        anonymized = []
+        for item in data:
+            anon_item, _ = _anonymize_json_recursive(
+                item, masterid, existing_rows, records
+            )
+            anonymized.append(anon_item)
+        return anonymized, records
+        
+    else:
+        # It's a scalar value - check if it needs anonymization
+        return _anonymize_scalar(data, masterid, existing_rows, records)
+
+
+def should_anonymize_key(key):
+    """
+    Determine if a key likely contains PII/PHI based on its name.
+    """
+    pii_keywords = [
+        'name', 'clinic_name', 'provider', 'doctor', 'physician',
+        'date', 'dob', 'birth', 'address', 'phone', 'email',
+        'ssn', 'mrn', 'id', 'diagnosis', 'medication', 
+        'referring_provider', 'clinic', 'hospital'
+    ]
+    
+    key_lower = key.lower()
+    return any(keyword in key_lower for keyword in pii_keywords)
+
+
+def _anonymize_value(key, value, masterid, existing_rows, records):
+    """
+    Anonymize a value based on the key context.
+    """
+    if value is None or value == '':
+        return value, []
+        
+    new_records = []
+    
+    # Determine PII type based on key
+    pii_type = determine_pii_type_from_key(key)
+    
+    # Check if we already have a fake value
+    fake_data = if_exists(existing_rows, pii_type, str(value))
+    if fake_data is None:
+        fake_data = if_exists(records, pii_type, str(value))
+        if fake_data is None:
+            # Generate new fake data
+            if pii_type == 'DATE':
+                fake_data = anonymize_date_hipaa(str(value))
+                fake_data_generator = 'HIPAA_Date_Handler'
+            else:
+                fake_data_generator, fake_data = generate_fake_data(pii_type)
+                
+            new_records.append({
+                'uuid': masterid,
+                'piiType': pii_type,
+                'originalData': str(value),
+                'fakeDataType': fake_data_generator,
+                'fakeData': fake_data
+            })
+    
+    return fake_data, new_records
+
+
+def _anonymize_scalar(value, masterid, existing_rows, records):
+    """
+    Anonymize a scalar value by detecting PII.
+    """
+    if value is None or value == '' or isinstance(value, (int, float, bool)):
+        return value, []
+        
+    # Detect PII in the value
+    entities = detect_pii_data(str(value))
+    
+    if not entities:
+        return value, []
+        
+    # Anonymize detected entities
+    anonymized_value = str(value)
+    new_records = []
+    
+    for entity in entities:
+        fake_data = if_exists(existing_rows, entity['Type'], entity['originalData'])
+        if fake_data is None:
+            fake_data = if_exists(records, entity['Type'], entity['originalData'])
+            if fake_data is None:
+                fake_data_generator, fake_data = generate_fake_data(entity['Type'])
+                new_records.append({
+                    'uuid': masterid,
+                    'piiType': entity['Type'],
+                    'originalData': entity['originalData'],
+                    'fakeDataType': fake_data_generator,
+                    'fakeData': fake_data
+                })
+        
+        anonymized_value = anonymized_value.replace(entity['originalData'], fake_data)
+    
+    return anonymized_value, new_records
+
+
+def determine_pii_type_from_key(key):
+    """
+    Determine the PII type based on the key name.
+    """
+    key_lower = key.lower()
+    
+    if any(x in key_lower for x in ['clinic_name', 'hospital', 'facility']):
+        return 'ORGANIZATION'
+    elif any(x in key_lower for x in ['provider', 'doctor', 'physician', 'referring']):
+        return 'NAME'
+    elif 'date' in key_lower:
+        return 'DATE'
+    elif 'diagnosis' in key_lower:
+        return 'DIAGNOSIS'
+    elif any(x in key_lower for x in ['phone', 'tel']):
+        return 'PHONE_NUMBER'
+    elif 'email' in key_lower:
+        return 'EMAIL'
+    elif 'address' in key_lower:
+        return 'ADDRESS'
+    elif any(x in key_lower for x in ['ssn', 'social']):
+        return 'SSN'
+    elif any(x in key_lower for x in ['mrn', 'medical_record']):
+        return 'MRN'
+    else:
+        return 'OTHER'
+
+
+def anonymize_date_hipaa(date_str):
+    """
+    Anonymize date according to HIPAA Safe Harbor.
+    Keeps only the year if the date is not in the current year.
+    """
+    try:
+        from datetime import datetime
+        current_year = datetime.now().year
+        
+        # Try different date formats
+        for fmt in ['%d/%b/%Y', '%d/%m/%Y', '%Y-%m-%d', '%m/%d/%Y']:
+            try:
+                date_obj = datetime.strptime(date_str, fmt)
+                if date_obj.year < current_year:
+                    return f"XX/XX/{date_obj.year}"
+                else:
+                    # Current year - anonymize month/day
+                    return f"XX/XX/{date_obj.year}"
+            except:
+                continue
+                
+        # If no format worked, return generic
+        return "XX/XX/XXXX"
+    except:
+        return "XX/XX/XXXX"
+
+
+def de_anonymize_json(identity, identityType, json_data, context=None):
+    """
+    De-anonymize JSON data while preserving structure.
+    """
+    try:
+        # Parse JSON if string
+        if isinstance(json_data, str):
+            data = json.loads(json_data)
+        else:
+            data = json_data
+            
+        masterid = get_piimaster_uuid(identity, identityType, insert=False)
+        
+        # Log de-anonymization access
+        log_phi_access(masterid, 'DE_ANONYMIZE_JSON', 'json_data', context)
+        
+        # Get PII data for user
+        rows = get_piientity_data(masterid)
+        
+        if not rows:
+            return {
+                "statusCode": 200,
+                "body": json.dumps({
+                    "result": data,
+                    "entities_restored": 0
+                })
+            }
+        
+        # Recursively de-anonymize
+        de_anonymized_data = _de_anonymize_json_recursive(data, rows)
+        
+        # Store de-anonymization record
+        metadata = {
+            'gdpr_access_reason': context.get('access_reason') if context else None,
+            'gdpr_authorized_by': context.get('authorized_by') if context else None,
+            'timestamp': datetime.datetime.utcnow().isoformat()
+        }
+        insert_piidata(masterid, json.dumps(de_anonymized_data), json.dumps(data), 
+                      'DE_ANONYMIZE_JSON', metadata=json.dumps(metadata))
+        
+        # Log success
+        audit_logger.log_success({
+            'masterid': masterid,
+            'action': 'DE_ANONYMIZE_JSON',
+            'entities_restored': len(rows),
+            'timestamp': datetime.datetime.utcnow().isoformat()
+        })
+        
+        return {
+            "statusCode": 200,
+            "body": json.dumps({
+                "result": de_anonymized_data,
+                "entities_restored": len(rows)
+            })
+        }
+        
+    except Exception as e:
+        logger.error(e)
+        audit_logger.log_error({
+            'action': 'DE_ANONYMIZE_JSON',
+            'error': str(e),
+            'timestamp': datetime.datetime.utcnow().isoformat()
+        })
+        return {
+            "statusCode": 500,
+            "error": f"Error: {e}"
+        }
+
+
+def _de_anonymize_json_recursive(data, rows):
+    """
+    Recursively de-anonymize JSON data.
+    """
+    if isinstance(data, dict):
+        de_anonymized = {}
+        for key, value in data.items():
+            de_anonymized[key] = _de_anonymize_json_recursive(value, rows)
+        return de_anonymized
+        
+    elif isinstance(data, list):
+        return [_de_anonymize_json_recursive(item, rows) for item in data]
+        
+    else:
+        # It's a scalar value - try to de-anonymize
+        if data is None or data == '':
+            return data
+            
+        # Try to find and replace fake data with original
+        result = str(data)
+        for row in rows:
+            if row['fakeData'] in result:
+                result = result.replace(row['fakeData'], row['originalData'])
+                
+        # Return appropriate type
+        if isinstance(data, str):
+            return result
+        else:
+            return data
+
+
 def lambda_handler(event, context):
-    """Enhanced lambda handler with context support"""
+    """Enhanced lambda handler with JSON support"""
     method = None
     identity = None
     identityType = None
     conversation = None
     profile = None
+    json_data = None
     request_context = {}
     
     logger.debug(event)
@@ -468,6 +824,8 @@ def lambda_handler(event, context):
             conversation = v
         elif k.upper() == 'PROFILE':
             profile = ast.literal_eval(v)
+        elif k.upper() == 'JSON_DATA':
+            json_data = v
         elif k.upper() == 'CONTEXT':
             request_context = v if isinstance(v, dict) else json.loads(v)
 
@@ -477,15 +835,23 @@ def lambda_handler(event, context):
 
     print(method)
     if method == 'ANONYMIZE':
-        if conversation:
+        if json_data:
+            response = anonymize_json(identity, identityType, json_data, request_context)
+        elif conversation:
             response = anonymizer(identity, identityType, conversation, request_context)
         else:
             response = anonymize_profile(identity, identityType, profile, request_context)
     elif method == 'DE-ANONYMIZE':
-        if conversation:
+        if json_data:
+            response = de_anonymize_json(identity, identityType, json_data, request_context)
+        elif conversation:
             response = de_anonymizer(identity, identityType, conversation, request_context)
         else:
             response = de_anonymize_profile(identity, identityType, profile, request_context)
+    elif method == 'ANONYMIZE_JSON':
+        response = anonymize_json(identity, identityType, json_data, request_context)
+    elif method == 'DE_ANONYMIZE_JSON':
+        response = de_anonymize_json(identity, identityType, json_data, request_context)
     else:
         logger.debug(f"No handler for http verb: {event['Method']}")
         raise Exception(f"No handler for http verb: {event['Method']}")
