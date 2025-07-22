@@ -454,6 +454,40 @@ def generate_fake_data(entity_type: str) -> Tuple[str, str]:
         dob = datetime.now() - timedelta(days=days_ago)
         return 'faker', dob.strftime('%m/%d/%Y')
     
+    elif entity_type == 'JOB_TITLE':
+        titles = [
+            'Consultant Physician',
+            'Senior Specialist',
+            'Clinical Director',
+            'Medical Officer',
+            'Research Coordinator',
+            'Clinical Assistant',
+            'Healthcare Professional',
+            'Medical Consultant',
+            'Senior Clinician',
+            'Clinical Specialist',
+            'Nurse Practitioner',
+            'Physician Assistant',
+            'Research Assistant',
+            'Clinical Research Coordinator'
+        ]
+        return 'medical_faker', random.choice(titles)
+    
+    elif entity_type == 'CLINICAL_NOTE':
+        notes = [
+            'routine follow-up and assessment',
+            'standard clinical evaluation',
+            'comprehensive health review',
+            'periodic medical assessment',
+            'general health consultation',
+            'clinical review and planning',
+            'medical evaluation and care planning',
+            'health status assessment',
+            'diagnostic workup and evaluation',
+            'treatment planning and review'
+        ]
+        return 'medical_faker', random.choice(notes)
+    
     # Generic fallback
     else:
         return 'generic', f"[REDACTED-{entity_type}]"
