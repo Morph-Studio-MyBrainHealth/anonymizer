@@ -162,12 +162,13 @@ def anonymize_profile(identity, identityType, profile, context=None):
                         break
                 
                 if medical_type:
-                    # Handle medical data
+                    # Handle medical data with non-medical replacements
                     fake_data = if_exists(rows, medical_type, str(value))
                     if fake_data is None:
                         fake_data = if_exists(records, medical_type, str(value))
                         if fake_data is None:
-                            fake_data_generator_name, fake_data = generate_fake_data(medical_type)
+                            fake_data = _generate_non_medical_fake_data(medical_type, str(value))
+                            fake_data_generator_name = 'Non_Medical_Handler'
                             records.append({
                                 'uuid': masterid,
                                 'piiType': medical_type,
@@ -218,14 +219,14 @@ def anonymize_profile(identity, identityType, profile, context=None):
                     if fake_data is None:
                         fake_data = if_exists(records, 'NAME', str(value))
                         if fake_data is None:
-                            fake_data_generator_name, fake_data = generate_fake_data('NAME')
+                            fake_data = _generate_non_medical_fake_data('NAME', str(value))
                             tokens = fake_data.split(' ')
                             fake_data = tokens[0]
                             records.append({
                                 'uuid': masterid,
                                 'piiType': 'NAME',
                                 'originalData': str(value),
-                                'fakeDataType': fake_data_generator_name,
+                                'fakeDataType': 'Non_Medical_Handler',
                                 'fakeData': fake_data
                             })
                 elif 'LAST NAME' in key.upper():
@@ -233,14 +234,14 @@ def anonymize_profile(identity, identityType, profile, context=None):
                     if fake_data is None:
                         fake_data = if_exists(records, 'NAME', str(value))
                         if fake_data is None:
-                            fake_data_generator_name, fake_data = generate_fake_data('NAME')
+                            fake_data = _generate_non_medical_fake_data('NAME', str(value))
                             tokens = fake_data.split(' ')
                             fake_data = tokens[1] if len(tokens) > 1 else tokens[0]
                             records.append({
                                 'uuid': masterid,
                                 'piiType': 'NAME',
                                 'originalData': str(value),
-                                'fakeDataType': fake_data_generator_name,
+                                'fakeDataType': 'Non_Medical_Handler',
                                 'fakeData': fake_data
                             })
                 else:
@@ -601,10 +602,202 @@ def should_anonymize_key(key):
     return any(keyword in key_lower for keyword in pii_keywords)
 
 
+def _generate_non_medical_fake_data(pii_type, original_value):
+    """
+    Generate non-medical fake data for medical entities.
+    Uses hash of original value for consistent replacements.
+    Returns generic, non-medical terms that don't reveal the nature of the data.
+    """
+    import random
+    import string
+    import hashlib
+    
+    # Use hash of original value to get consistent fake data
+    hash_val = int(hashlib.md5(original_value.encode()).hexdigest()[:8], 16)
+    
+    # Non-medical replacement sets organized by category
+    non_medical_replacements = {
+        'DIAGNOSIS': [
+            'Blue Mountain Project',
+            'Sunrise Initiative',
+            'Green Valley Protocol',
+            'Ocean Wave Study',
+            'Silver Bridge Program',
+            'Golden Gate Analysis',
+            'Crystal River Method',
+            'Desert Sand Framework',
+            'Northern Light Process',
+            'Eastern Shore Approach',
+            'Maple Leaf System',
+            'Thunder Bay Model',
+            'Moonlight Strategy',
+            'Starlight Pattern',
+            'Rainbow Arc Design'
+        ],
+        'ORGANIZATION': [
+            'Alpine Resources Center',
+            'Riverside Associates',
+            'Oakwood Services',
+            'Pinehurst Group',
+            'Lakeside Institute',
+            'Mountain View Partners',
+            'Valley Stream Corp',
+            'Oceanside Enterprises',
+            'Hillcrest Solutions',
+            'Meadowbrook Systems',
+            'Northwind Analytics',
+            'Southgate Dynamics',
+            'Eastside Innovations',
+            'Westfield Operations',
+            'Central Park Agency'
+        ],
+        'JOB_TITLE': [
+            'Senior Analyst',
+            'Project Coordinator',
+            'Operations Manager',
+            'Technical Lead',
+            'Research Associate',
+            'Quality Specialist',
+            'Systems Administrator',
+            'Program Director',
+            'Data Architect',
+            'Process Engineer',
+            'Strategic Consultant',
+            'Regional Supervisor',
+            'Implementation Expert',
+            'Solutions Designer',
+            'Integration Specialist'
+        ],
+        'CLINICAL_NOTE': [
+            'standard review completed',
+            'routine evaluation performed',
+            'scheduled assessment done',
+            'periodic check finished',
+            'regular inspection conducted',
+            'systematic review executed',
+            'comprehensive analysis completed',
+            'detailed examination performed',
+            'thorough investigation done',
+            'methodical survey finished'
+        ],
+        'SLEEP_PATTERN': [
+            'Pattern Alpha-7',
+            'Sequence Beta-3',
+            'Rhythm Gamma-1',
+            'Cycle Delta-9',
+            'Phase Epsilon-4',
+            'Mode Zeta-2',
+            'State Eta-8',
+            'Form Theta-5',
+            'Type Iota-6',
+            'Configuration Kappa-0'
+        ],
+        'PSYCHIATRIC_SYMPTOM': [
+            'Status Green-Active',
+            'Condition Blue-Stable',
+            'State Yellow-Monitored',
+            'Phase Orange-Tracked',
+            'Level Purple-Observed',
+            'Mode Teal-Recorded',
+            'Type Silver-Noted',
+            'Form Gold-Documented',
+            'Pattern Bronze-Logged',
+            'Configuration Gray-Filed'
+        ],
+        'DAILY_ACTIVITY': [
+            'Process Type A1',
+            'Method Category B2',
+            'Approach Level C3',
+            'System Grade D4',
+            'Protocol Class E5',
+            'Procedure Rank F6',
+            'Operation Tier G7',
+            'Function Stage H8',
+            'Activity Phase I9',
+            'Task Mode J0'
+        ],
+        'MEDICAL_CONDITION': [
+            'Factor X-12',
+            'Element Y-34',
+            'Component Z-56',
+            'Variable W-78',
+            'Parameter V-90',
+            'Attribute U-21',
+            'Property T-43',
+            'Feature S-65',
+            'Characteristic R-87',
+            'Aspect Q-09'
+        ],
+        'MEDICATION': [
+            'Product Code A1B2',
+            'Item Number C3D4',
+            'Reference ID E5F6',
+            'Catalog Entry G7H8',
+            'Stock Code I9J0',
+            'Asset Tag K1L2',
+            'Inventory ID M3N4',
+            'Serial Code O5P6',
+            'Batch Number Q7R8',
+            'Lot Reference S9T0'
+        ],
+        'PROCEDURE': [
+            'Process 100-A',
+            'Method 200-B',
+            'Technique 300-C',
+            'Protocol 400-D',
+            'Operation 500-E',
+            'Function 600-F',
+            'Activity 700-G',
+            'Task 800-H',
+            'Action 900-I',
+            'Step 1000-J'
+        ],
+        'LAB_VALUE': [
+            'Metric A: 42.7',
+            'Index B: 3.14',
+            'Score C: 98.6',
+            'Value D: 7.25',
+            'Reading E: 120',
+            'Result F: 0.85',
+            'Output G: 15.3',
+            'Level H: 6.02',
+            'Rate I: 72.0',
+            'Factor J: 1.618'
+        ]
+    }
+    
+    # Special handling for NAME type - use colors + objects
+    if pii_type == 'NAME':
+        colors = ['Blue', 'Green', 'Red', 'Silver', 'Golden', 'Crystal', 
+                 'Amber', 'Violet', 'Crimson', 'Azure', 'Indigo', 'Coral']
+        objects = ['River', 'Mountain', 'Valley', 'Forest', 'Ocean', 'Desert', 
+                  'Meadow', 'Canyon', 'Prairie', 'Glacier', 'Plateau', 'Ridge']
+        
+        # Use hash to select consistent names
+        color = colors[hash_val % len(colors)]
+        obj = objects[(hash_val >> 8) % len(objects)]
+        
+        # Check if original has a title
+        if any(title in original_value for title in ['Dr.', 'Professor', 'Mr.', 'Mrs.', 'Ms.']):
+            return f"Specialist {color} {obj}"
+        else:
+            return f"{color} {obj}"
+    
+    # Get the appropriate replacement list
+    if pii_type in non_medical_replacements:
+        options = non_medical_replacements[pii_type]
+        # Use hash to select consistent option
+        return options[hash_val % len(options)]
+    
+    # For any other type, use a generic code
+    return f"Code-{pii_type[:3]}-{hash_val % 10000:04d}"
+
+
 def _anonymize_value(key, value, masterid, existing_rows, records):
     """
     Anonymize a value based on the key context.
     ALWAYS anonymizes if the key indicates sensitive data.
+    Modified to use non-medical replacements.
     """
     if value is None or value == '':
         return value, []
@@ -629,12 +822,9 @@ def _anonymize_value(key, value, masterid, existing_rows, records):
                     if fake_data is None:
                         fake_data = if_exists(records, pii_type, str(item))
                         if fake_data is None:
-                            # Generate new fake data
-                            try:
-                                fake_data_generator, fake_data = generate_fake_data(pii_type)
-                            except:
-                                fake_data = _generate_generic_fake_data(pii_type, str(item))
-                                fake_data_generator = 'Generic_Handler'
+                            # Generate new fake data using non-medical generator
+                            fake_data = _generate_non_medical_fake_data(pii_type, str(item))
+                            fake_data_generator = 'Non_Medical_Handler'
                             
                             new_record = {
                                 'uuid': masterid,
@@ -674,13 +864,9 @@ def _anonymize_value(key, value, masterid, existing_rows, records):
                 fake_data = anonymize_date_hipaa(str_value)
                 fake_data_generator = 'HIPAA_Date_Handler'
             else:
-                # ALWAYS generate fake data for sensitive keys
-                try:
-                    fake_data_generator, fake_data = generate_fake_data(pii_type)
-                except:
-                    # Use fallback generation
-                    fake_data = _generate_generic_fake_data(pii_type, str_value)
-                    fake_data_generator = 'Generic_Handler'
+                # Use non-medical generator for all sensitive data
+                fake_data = _generate_non_medical_fake_data(pii_type, str_value)
+                fake_data_generator = 'Non_Medical_Handler'
                 
             new_record = {
                 'uuid': masterid,
@@ -698,176 +884,10 @@ def _anonymize_value(key, value, masterid, existing_rows, records):
     return fake_data, new_records
 
 
-def _generate_generic_fake_data(pii_type, original_value):
-    """
-    Generate generic fake data when specific generators aren't available.
-    Enhanced with more types. Uses hash of original value for consistent replacements.
-    """
-    import random
-    import string
-    import hashlib
-    
-    # Use hash of original value to get consistent fake data
-    hash_val = int(hashlib.md5(original_value.encode()).hexdigest()[:8], 16)
-    
-    generic_replacements = {
-        'DIAGNOSIS': [
-            'Chronic Fatigue Syndrome',
-            'Essential Hypertension',
-            'Type 2 Diabetes Mellitus',
-            'Major Depressive Disorder',
-            'Generalized Anxiety Disorder',
-            'Migraine without Aura',
-            'Gastroesophageal Reflux Disease',
-            'Mild Neurocognitive Disorder',
-            'Memory Impairment',
-            'Cognitive Disorder'
-        ],
-        'ORGANIZATION': [
-            'General Medical Center',
-            'Regional Health Clinic',
-            'Community Care Hospital',
-            'Wellness Medical Group',
-            'Metropolitan Health Services',
-            'Central Medical Associates',
-            'Premier Healthcare Center',
-            'Unity Health Network',
-            'Integrated Memory Care Service',
-            'Neurological Assessment Unit'
-        ],
-        'JOB_TITLE': [
-            'Consultant Physician',
-            'Senior Specialist',
-            'Clinical Director',
-            'Medical Officer',
-            'Research Coordinator',
-            'Clinical Assistant',
-            'Healthcare Professional',
-            'Medical Consultant',
-            'Senior Clinician',
-            'Clinical Specialist'
-        ],
-        'CLINICAL_NOTE': [
-            'routine follow-up and assessment',
-            'standard clinical evaluation',
-            'comprehensive health review',
-            'periodic medical assessment',
-            'general health consultation',
-            'clinical review and planning',
-            'medical evaluation and care planning',
-            'health status assessment'
-        ],
-        'SLEEP_PATTERN': [
-            'regular sleep schedule',
-            'restful sleep throughout night',
-            'occasional sleep interruptions',
-            'early morning awakening',
-            'difficulty falling asleep',
-            'frequent nighttime awakenings',
-            'excessive daytime sleepiness',
-            'normal sleep patterns',
-            'light sleep',
-            'deep sleep cycles'
-        ],
-        'PSYCHIATRIC_SYMPTOM': [
-            'mild symptoms during adjustment period',
-            'symptoms well-controlled with treatment',
-            'occasional mild symptoms',
-            'improving symptoms with therapy',
-            'stable mood and behavior',
-            'periodic mild symptoms',
-            'symptoms responding to treatment',
-            'manageable symptoms with support',
-            'minimal symptoms observed',
-            'symptoms stable on current regimen'
-        ],
-        'DAILY_ACTIVITY': [
-            'requires minimal assistance',
-            'independent with supervision',
-            'needs occasional support',
-            'manages with adaptive equipment',
-            'performs activity with reminders',
-            'completes task independently',
-            'requires setup assistance only',
-            'needs verbal cuing',
-            'independent in familiar settings',
-            'manages with written instructions'
-        ],
-        'MEDICAL_CONDITION': [
-            'condition stable',
-            'symptoms well-managed',
-            'improving with treatment',
-            'regular monitoring in place',
-            'no acute concerns',
-            'managed with medication',
-            'stable on current regimen',
-            'periodic evaluation scheduled',
-            'responding well to therapy',
-            'condition unchanged'
-        ],
-        'MEDICATION': [
-            'Acetaminophen 500mg',
-            'Ibuprofen 200mg',
-            'Omeprazole 20mg',
-            'Lisinopril 10mg',
-            'Metformin 500mg',
-            'Atorvastatin 20mg',
-            'Amlodipine 5mg',
-            'Sertraline 50mg'
-        ],
-        'PROCEDURE': [
-            'Physical Examination',
-            'Blood Test',
-            'X-Ray',
-            'MRI Scan',
-            'Ultrasound',
-            'ECG',
-            'Consultation',
-            'Follow-up Visit'
-        ],
-        'LAB_VALUE': [
-            'Normal Range',
-            '120 mg/dL',
-            '7.2%',
-            '98.6°F',
-            '120/80 mmHg',
-            'Negative',
-            'Within Limits',
-            'Stable'
-        ]
-    }
-    
-    # If we have specific replacements for this type, use them
-    if pii_type in generic_replacements:
-        options = generic_replacements[pii_type]
-        # Use hash to select consistent option
-        return options[hash_val % len(options)]
-    
-    # For NAME type, generate a realistic name
-    if pii_type == 'NAME':
-        first_names = ['James', 'Mary', 'John', 'Patricia', 'Robert', 'Jennifer', 
-                      'Michael', 'Linda', 'William', 'Elizabeth', 'David', 'Barbara']
-        last_names = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 
-                     'Miller', 'Davis', 'Rodriguez', 'Martinez', 'Anderson', 'Taylor']
-        
-        # Use hash to select consistent names
-        first_name = first_names[hash_val % len(first_names)]
-        last_name = last_names[(hash_val >> 8) % len(last_names)]
-        
-        # Check if original has a title
-        if any(title in original_value for title in ['Dr.', 'Professor', 'Mr.', 'Mrs.', 'Ms.']):
-            return f"Dr. {first_name} {last_name}"
-        else:
-            return f"{first_name} {last_name}"
-    
-    # Otherwise, generate a generic anonymized string
-    return f"[Anonymized {pii_type}]"
-
-
 def _anonymize_scalar(value, masterid, existing_rows, records):
     """
     Anonymize a scalar value by detecting PII.
-    Enhanced to handle failures gracefully.
+    Enhanced to use non-medical replacements.
     """
     if value is None or value == '' or isinstance(value, (int, float, bool)):
         return value, []
@@ -887,12 +907,9 @@ def _anonymize_scalar(value, masterid, existing_rows, records):
         if fake_data is None:
             fake_data = if_exists(records, entity['Type'], entity['originalData'])
             if fake_data is None:
-                try:
-                    fake_data_generator, fake_data = generate_fake_data(entity['Type'])
-                except:
-                    # If generation fails, use a simple replacement
-                    fake_data = f"[REDACTED-{entity['Type']}]"
-                    fake_data_generator = 'Redaction_Handler'
+                # Use non-medical fake data generator
+                fake_data = _generate_non_medical_fake_data(entity['Type'], entity['originalData'])
+                fake_data_generator = 'Non_Medical_Handler'
                     
                 new_records.append({
                     'uuid': masterid,
