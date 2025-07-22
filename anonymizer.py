@@ -525,6 +525,7 @@ def anonymize_json(identity, identityType, json_data, context=None):
 def _anonymize_json_recursive(data, masterid, existing_rows, records=None):
     """
     Recursively anonymize JSON data, handling nested structures.
+    Enhanced to handle all structures properly.
     """
     if records is None:
         records = []
@@ -532,13 +533,15 @@ def _anonymize_json_recursive(data, masterid, existing_rows, records=None):
     if isinstance(data, dict):
         anonymized = {}
         for key, value in data.items():
-            # Check if the key itself indicates a type of data
+            # ALWAYS check if the key indicates sensitive data
             if should_anonymize_key(key):
+                # Force anonymization for sensitive keys
                 anonymized[key], new_records = _anonymize_value(
                     key, value, masterid, existing_rows, records
                 )
                 records.extend(new_records)
             else:
+                # For non-sensitive keys, still check the value
                 anonymized[key], _ = _anonymize_json_recursive(
                     value, masterid, existing_rows, records
                 )
@@ -555,18 +558,22 @@ def _anonymize_json_recursive(data, masterid, existing_rows, records=None):
         
     else:
         # It's a scalar value - check if it needs anonymization
+        # Even for non-sensitive keys, check if the value contains PII
         return _anonymize_scalar(data, masterid, existing_rows, records)
 
 
 def should_anonymize_key(key):
     """
     Determine if a key likely contains PII/PHI based on its name.
+    Enhanced to catch more medical fields.
     """
     pii_keywords = [
         'name', 'clinic_name', 'provider', 'doctor', 'physician',
         'date', 'dob', 'birth', 'address', 'phone', 'email',
         'ssn', 'mrn', 'id', 'diagnosis', 'medication', 
-        'referring_provider', 'clinic', 'hospital'
+        'referring_provider', 'clinic', 'hospital', 'service',
+        'clinician', 'consultant', 'psychiatrist', 'psychologist',
+        'therapist', 'counselor', 'nurse', 'role'
     ]
     
     key_lower = key.lower()
@@ -576,50 +583,58 @@ def should_anonymize_key(key):
 def _anonymize_value(key, value, masterid, existing_rows, records):
     """
     Anonymize a value based on the key context.
-    Enhanced to handle cases where generate_fake_data might not support certain types.
+    ALWAYS anonymizes if the key indicates sensitive data.
     """
     if value is None or value == '':
         return value, []
         
+    # Handle lists (like the clinicians array)
+    if isinstance(value, list):
+        anonymized_list = []
+        for item in value:
+            if isinstance(item, dict):
+                anon_item, _ = _anonymize_json_recursive(item, masterid, existing_rows, records)
+                anonymized_list.append(anon_item)
+            else:
+                anon_val, new_recs = _anonymize_value(key, item, masterid, existing_rows, records)
+                records.extend(new_recs)
+                anonymized_list.append(anon_val)
+        return anonymized_list, []
+    
+    # Handle nested objects
+    if isinstance(value, dict):
+        return _anonymize_json_recursive(value, masterid, existing_rows, records)
+        
     new_records = []
+    
+    # Convert value to string for processing
+    str_value = str(value)
     
     # Determine PII type based on key
     pii_type = determine_pii_type_from_key(key)
     
     # Check if we already have a fake value
-    fake_data = if_exists(existing_rows, pii_type, str(value))
+    fake_data = if_exists(existing_rows, pii_type, str_value)
     if fake_data is None:
-        fake_data = if_exists(records, pii_type, str(value))
+        fake_data = if_exists(records, pii_type, str_value)
         if fake_data is None:
             # Generate new fake data
             if pii_type == 'DATE':
-                fake_data = anonymize_date_hipaa(str(value))
+                fake_data = anonymize_date_hipaa(str_value)
                 fake_data_generator = 'HIPAA_Date_Handler'
             else:
+                # ALWAYS generate fake data for sensitive keys
                 try:
-                    # Try to generate fake data for the specific type
                     fake_data_generator, fake_data = generate_fake_data(pii_type)
                 except:
-                    # If the specific type isn't supported, fall back to detecting PII in the value
-                    entities = detect_pii_data(str(value))
-                    if entities:
-                        # Use the first detected entity type
-                        entity = entities[0]
-                        try:
-                            fake_data_generator, fake_data = generate_fake_data(entity['Type'])
-                        except:
-                            # If still failing, use a generic replacement
-                            fake_data = _generate_generic_fake_data(pii_type, str(value))
-                            fake_data_generator = 'Generic_Handler'
-                    else:
-                        # No PII detected, generate generic fake data based on type
-                        fake_data = _generate_generic_fake_data(pii_type, str(value))
-                        fake_data_generator = 'Generic_Handler'
+                    # Use fallback generation
+                    fake_data = _generate_generic_fake_data(pii_type, str_value)
+                    fake_data_generator = 'Generic_Handler'
                 
             new_records.append({
                 'uuid': masterid,
                 'piiType': pii_type,
-                'originalData': str(value),
+                'originalData': str_value,
                 'fakeDataType': fake_data_generator,
                 'fakeData': fake_data
             })
@@ -630,20 +645,23 @@ def _anonymize_value(key, value, masterid, existing_rows, records):
 def _generate_generic_fake_data(pii_type, original_value):
     """
     Generate generic fake data when specific generators aren't available.
+    Enhanced with more types.
     """
     import random
     import string
     
     generic_replacements = {
         'DIAGNOSIS': [
-            'Chronic Fatigue Syndrome (G93.3)',
-            'Essential Hypertension (I10)',
-            'Type 2 Diabetes Mellitus (E11.9)',
-            'Major Depressive Disorder (F32.9)',
-            'Generalized Anxiety Disorder (F41.1)',
-            'Migraine without Aura (G43.0)',
-            'Gastroesophageal Reflux Disease (K21.9)',
-            'Allergic Rhinitis (J30.9)'
+            'Chronic Fatigue Syndrome',
+            'Essential Hypertension',
+            'Type 2 Diabetes Mellitus',
+            'Major Depressive Disorder',
+            'Generalized Anxiety Disorder',
+            'Migraine without Aura',
+            'Gastroesophageal Reflux Disease',
+            'Mild Neurocognitive Disorder',
+            'Memory Impairment',
+            'Cognitive Disorder'
         ],
         'ORGANIZATION': [
             'General Medical Center',
@@ -653,7 +671,31 @@ def _generate_generic_fake_data(pii_type, original_value):
             'Metropolitan Health Services',
             'Central Medical Associates',
             'Premier Healthcare Center',
-            'Unity Health Network'
+            'Unity Health Network',
+            'Integrated Memory Care Service',
+            'Neurological Assessment Unit'
+        ],
+        'JOB_TITLE': [
+            'Consultant Physician',
+            'Senior Specialist',
+            'Clinical Director',
+            'Medical Officer',
+            'Research Coordinator',
+            'Clinical Assistant',
+            'Healthcare Professional',
+            'Medical Consultant',
+            'Senior Clinician',
+            'Clinical Specialist'
+        ],
+        'CLINICAL_NOTE': [
+            'routine follow-up and assessment',
+            'standard clinical evaluation',
+            'comprehensive health review',
+            'periodic medical assessment',
+            'general health consultation',
+            'clinical review and planning',
+            'medical evaluation and care planning',
+            'health status assessment'
         ],
         'MEDICATION': [
             'Acetaminophen 500mg',
@@ -691,16 +733,21 @@ def _generate_generic_fake_data(pii_type, original_value):
     if pii_type in generic_replacements:
         return random.choice(generic_replacements[pii_type])
     
+    # For NAME type, generate a realistic name
+    if pii_type == 'NAME':
+        first_names = ['James', 'Mary', 'John', 'Patricia', 'Robert', 'Jennifer', 
+                      'Michael', 'Linda', 'William', 'Elizabeth', 'David', 'Barbara']
+        last_names = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 
+                     'Miller', 'Davis', 'Rodriguez', 'Martinez', 'Anderson', 'Taylor']
+        
+        # Check if original has a title
+        if any(title in original_value for title in ['Dr.', 'Professor', 'Mr.', 'Mrs.', 'Ms.']):
+            return f"Dr. {random.choice(first_names)} {random.choice(last_names)}"
+        else:
+            return f"{random.choice(first_names)} {random.choice(last_names)}"
+    
     # Otherwise, generate a generic anonymized string
-    # Preserve the general format/length of the original
-    if '(' in original_value and ')' in original_value:
-        # Looks like it has a code, preserve that format
-        base = ''.join(random.choices(string.ascii_uppercase, k=3))
-        code = ''.join(random.choices(string.digits, k=2))
-        return f"Anonymized {pii_type} ({base}{code})"
-    else:
-        # Just return a generic anonymized value
-        return f"[Anonymized {pii_type}]"
+    return f"[Anonymized {pii_type}]"
 
 
 def _anonymize_scalar(value, masterid, existing_rows, records):
@@ -749,18 +796,25 @@ def _anonymize_scalar(value, masterid, existing_rows, records):
 def determine_pii_type_from_key(key):
     """
     Determine the PII type based on the key name.
+    Enhanced with more specific mappings.
     """
     key_lower = key.lower()
     
-    if any(x in key_lower for x in ['clinic_name', 'hospital', 'facility']):
+    # Check for specific patterns first
+    if any(x in key_lower for x in ['clinic_name', 'hospital', 'facility', 'service', 'center']):
         return 'ORGANIZATION'
-    elif any(x in key_lower for x in ['provider', 'doctor', 'physician', 'referring']):
+    elif any(x in key_lower for x in ['provider', 'doctor', 'physician', 'referring', 'clinician', 
+                                      'consultant', 'psychiatrist', 'psychologist', 'therapist']):
         return 'NAME'
+    elif 'name' in key_lower and 'clinic' not in key_lower:  # Just "name" but not "clinic_name"
+        return 'NAME'
+    elif 'role' in key_lower:
+        return 'JOB_TITLE'
     elif 'date' in key_lower:
         return 'DATE'
-    elif 'diagnosis' in key_lower:
+    elif 'diagnosis' in key_lower or 'condition' in key_lower:
         return 'DIAGNOSIS'
-    elif any(x in key_lower for x in ['phone', 'tel']):
+    elif any(x in key_lower for x in ['phone', 'tel', 'mobile', 'cell']):
         return 'PHONE_NUMBER'
     elif 'email' in key_lower:
         return 'EMAIL'
@@ -768,8 +822,10 @@ def determine_pii_type_from_key(key):
         return 'ADDRESS'
     elif any(x in key_lower for x in ['ssn', 'social']):
         return 'SSN'
-    elif any(x in key_lower for x in ['mrn', 'medical_record']):
+    elif any(x in key_lower for x in ['mrn', 'medical_record', 'patient_id']):
         return 'MRN'
+    elif 'reason' in key_lower:
+        return 'CLINICAL_NOTE'
     else:
         return 'OTHER'
 
