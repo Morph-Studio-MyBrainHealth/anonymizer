@@ -1,308 +1,451 @@
-from sqlalchemy import func, select, and_
+"""
+Database methods for PII/PHI anonymization system
+Enhanced with proper statistics tracking and transaction management
+"""
+
+import uuid
 import json
-import datetime
+import logging
+from datetime import datetime
+from sqlalchemy import text
 
 import db_utils
-from db_objects import piimaster_table, piidata_table, piientity_table
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Get database session
+session = db_utils.get_db_session()
 
 
 def get_piimaster_uuid(identity, identityType, insert=True):
     """
-    Retrieves or creates a UUID for a given identity and identity type in the piimaster table.
-
-    This function performs the following operations:
-    1. Queries the piimaster table for an existing UUID based on the provided identity and identityType.
-    2. If no UUID is found and insert is True, it generates a new UUID and inserts a new record into the piimaster table.
-    3. Returns the existing or newly created UUID.
-
+    Get or create a master UUID for the given identity.
+    
     Args:
-        identity (str): The identity value to look up or insert.
-        identityType (str): The type of the identity (e.g., 'phone', 'email').
-        insert (bool, optional): If True, inserts a new record when no matching UUID is found. Defaults to True.
-
+        identity: The identifier (e.g., user ID, email)
+        identityType: The type of identifier
+        insert: Whether to create a new record if not found
+    
     Returns:
-        str: The UUID associated with the given identity and identityType.
-
-    Note:
-        This function manages its own database session, opening it at the start and closing it at the end.
+        The master UUID string
     """
-    import uuid as uuid_module
-    
-    # Open a session
-    session = db_utils.get_db_session()
     try:
-        query = piimaster_table.select().where(
-            and_(func.upper(piimaster_table.c.identity) == identity.upper(),
-                 func.upper(piimaster_table.c.identityType) == identityType.upper()))
-        masterid = session.execute(query).scalar()
-        if insert and masterid is None:
-            # Generate UUID in Python for SQLite compatibility
-            masterid = str(uuid_module.uuid4())
-            query = piimaster_table.insert().values(uuid=masterid, identity=identity, identityType=identityType)
-            session.execute(query)
-            session.commit()
-        return masterid
-    finally:
-        # Close the session
-        session.close()
-
-
-def insert_piidata(masterid, originalData, fakeData, method, metadata=None):
-    """
-    Inserts a new record into the piidata table if an identical record doesn't already exist.
-    Enhanced with metadata support for GDPR compliance tracking.
-    
-    Args:
-        masterid (str): The UUID associated with the identity.
-        originalData (str): The original PII data.
-        fakeData (str): The anonymized version of the PII data.
-        method (str): The method used for anonymization ('ANONYMIZE' or 'DE-ANONYMIZE').
-        metadata (str, optional): JSON string containing GDPR metadata like purpose, legal basis, etc.
-
-    Note:
-        This function manages its own database session, opening it at the start and closing it at the end.
-        If a duplicate record is found, the function will log a message and skip insertion.
-    """
-    # Open a session
-    session = db_utils.get_db_session()
-    try:
-        # Check if record with same masterid, originalData and fakeData already exists
-        # Note: Removed the createdAt comparison as it would always be different
-        exists_query = (
-            select(func.count())
-            .select_from(piidata_table)
-            .where(
-                and_(
-                    piidata_table.c.uuid == masterid,
-                    piidata_table.c.originalData == originalData,
-                    piidata_table.c.fakeData == fakeData
-                )
-            )
-        )
-        result = session.execute(exists_query)
-        exists = result.scalar()
-
-        if not exists:
-            # Insert new record only if exact match doesn't exist
-            values = {
-                'uuid': masterid,
-                'originalData': originalData,
-                'fakeData': fakeData,
-                'method': method,
-            }
-            
-            # Add metadata if provided (for GDPR compliance)
-            if metadata:
-                values['metadata'] = metadata
-            
-            query = piidata_table.insert().values(**values)
-            session.execute(query)
-            session.commit()
-        else:
-            print(f"Record with masterid: {masterid}, originalData: {originalData[:50]}..., fakeData: {fakeData[:50]}... already exists")
-    finally:
-        # Close the session
-        session.close()
-
-
-def bulk_insert_piidata(records):
-    """
-    Inserts multiple records into the piidata table in a single transaction.
-
-    Args:
-        records (list): A list of dictionaries, each containing the data for one record to be inserted.
-
-    Note:
-        This function manages its own database session, opening it at the start and closing it at the end.
-    """
-    # Open a session
-    session = db_utils.get_db_session()
-    try:
-        query = piidata_table.insert().values(records)
-        session.execute(query)
-        session.commit()
-    finally:
-        # Close the session
-        session.close()
-
-
-def insert_piientity(masterid, piiType, originalData, fakeData):
-    """
-    Inserts a new record into the piientity table.
-
-    Args:
-        masterid (str): The UUID associated with the identity.
-        piiType (str): The type of PII data (e.g., 'NAME', 'ADDRESS', 'PHONE', 'DIAGNOSIS', 'MEDICATION').
-        originalData (str): The original PII data.
-        fakeData (str): The anonymized version of the PII data.
-
-    Note:
-        This function manages its own database session, opening it at the start and closing it at the end.
-        Enhanced to support medical entity types for HIPAA compliance.
-    """
-    # Open a session
-    session = db_utils.get_db_session()
-    try:
-        query = piientity_table.insert().values(uuid=masterid, piiType=piiType, originalData=originalData,
-                                                fakeData=fakeData)
-        session.execute(query)
-        session.commit()
-    finally:
-        # Close the session
-        session.close()
-
-
-def bulk_insert_piientity(records):
-    """
-    Inserts multiple records into the piientity table in a single transaction.
-    Enhanced to handle medical entity types.
-
-    Args:
-        records (list): A list of dictionaries, each containing the data for one record to be inserted.
-
-    Note:
-        This function manages its own database session, opening it at the start and closing it at the end.
-    """
-    session = db_utils.get_db_session()
-    try:
-        # Validate medical entity types before insertion
-        valid_types = [
-            'NAME', 'ADDRESS', 'EMAIL', 'PHONE', 'SSN', 'DATE_TIME', 'AGE',
-            'DIAGNOSIS', 'MEDICATION', 'LAB_VALUE', 'MRN', 'PROCEDURE',
-            'DEVICE_ID', 'CLINICAL_TRIAL', 'MEDICAL_CONDITION', 
-            'TEST_TREATMENT_PROCEDURE', 'INSURANCE_ID', 'PROVIDER_ID', 'ZIP'
-        ]
+        # Check if identity already exists
+        query = """
+            SELECT uuid FROM PIIMaster 
+            WHERE identity = %s AND identityType = %s
+        """
+        result = session.execute(query, (identity, identityType))
+        row = result.fetchone()
         
-        for record in records:
-            if record.get('piiType') not in valid_types:
-                print(f"Warning: Unknown PII type {record.get('piiType')}. Adding to valid types.")
-                valid_types.append(record.get('piiType'))
+        if row:
+            return row['uuid']
         
-        query = piientity_table.insert().values(records)
-        session.execute(query)
-        session.commit()
-    finally:
-        # Close the session
-        session.close()
+        if insert:
+            # Create new UUID
+            master_uuid = str(uuid.uuid4())
+            insert_query = """
+                INSERT INTO PIIMaster (uuid, identity, identityType, created_at)
+                VALUES (%s, %s, %s, %s)
+            """
+            session.execute(insert_query, 
+                          (master_uuid, identity, identityType, datetime.utcnow()))
+            session.commit()
+            return master_uuid
+        
+        return None
+        
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error in get_piimaster_uuid: {e}")
+        raise
 
 
 def get_piientity_data(masterid):
     """
-    Retrieves all records from the piientity table for a given masterid.
-    Enhanced to include medical entity types.
-
+    Get all PII entity mappings for a master ID.
+    
     Args:
-        masterid (str): The UUID associated with the identity.
-
+        masterid: The master UUID
+    
     Returns:
-        list: A list of dictionaries, each representing a row from the piientity table.
-
-    Note:
-        This function manages its own database session, opening it at the start and closing it at the end.
+        List of dictionaries with PII mappings
     """
-    # Open a session
-    session = db_utils.get_db_session()
     try:
+        query = """
+            SELECT piiType, originalData, fakeDataType, fakeData
+            FROM PIIEntity
+            WHERE uuid = %s
+        """
+        result = session.execute(query, (masterid,))
+        
         rows = []
-        query = piientity_table.select().where(piientity_table.c.uuid == masterid)
-        result = session.execute(query)
         for row in result:
-            rows.append(dict(row._asdict()))
+            rows.append({
+                'piiType': row['piiType'],
+                'originalData': row['originalData'],
+                'fakeDataType': row['fakeDataType'],
+                'fakeData': row['fakeData']
+            })
+        
         return rows
-    finally:
-        # Close the session
-        session.close()
+        
+    except Exception as e:
+        logger.error(f"Error in get_piientity_data: {e}")
+        return []
 
 
-def get_anonymization_statistics(masterid=None, start_date=None, end_date=None):
+def bulk_insert_piientity(records):
     """
-    Get statistics about anonymization operations for HIPAA reporting.
+    Bulk insert PII entity records.
     
     Args:
-        masterid (str, optional): Filter by specific patient ID
-        start_date (datetime, optional): Start date for filtering
-        end_date (datetime, optional): End date for filtering
-    
-    Returns:
-        dict: Statistics including counts by entity type, method, etc.
+        records: List of dictionaries with PII entity data
     """
-    session = db_utils.get_db_session()
     try:
-        # Base query
-        query = select(
-            piientity_table.c.piiType,
-            func.count(piientity_table.c.piiType).label('count')
-        )
-        
-        # Apply filters
-        if masterid:
-            query = query.where(piientity_table.c.uuid == masterid)
-        
-        if start_date:
-            query = query.where(piientity_table.c.createdAt >= start_date)
-        
-        if end_date:
-            query = query.where(piientity_table.c.createdAt <= end_date)
-        
-        # Group by entity type
-        query = query.group_by(piientity_table.c.piiType)
-        
-        result = session.execute(query).fetchall()
-        
-        stats = {
-            'entity_types': {},
-            'total_entities': 0,
-            'medical_entities': 0,
-            'pii_entities': 0
-        }
-        
-        medical_types = ['DIAGNOSIS', 'MEDICATION', 'LAB_VALUE', 'MRN', 'PROCEDURE', 
-                        'DEVICE_ID', 'CLINICAL_TRIAL', 'MEDICAL_CONDITION']
-        
-        for row in result:
-            entity_type = row[0]
-            count = row[1]
-            stats['entity_types'][entity_type] = count
-            stats['total_entities'] += count
+        for record in records:
+            # Check if record already exists
+            check_query = """
+                SELECT COUNT(*) as count FROM PIIEntity
+                WHERE uuid = %s AND piiType = %s AND originalData = %s
+            """
+            result = session.execute(check_query, 
+                                   (record['uuid'], record['piiType'], record['originalData']))
             
-            if entity_type in medical_types:
-                stats['medical_entities'] += count
-            else:
-                stats['pii_entities'] += count
-        
-        return stats
-        
-    finally:
-        session.close()
-
-
-def purge_old_data(days_to_keep=2190):  # Default 6 years for HIPAA
-    """
-    Purge anonymization data older than specified days.
-    HIPAA requires 6 years retention, GDPR may require deletion sooner.
-    
-    Args:
-        days_to_keep (int): Number of days to retain data (default 2190 = 6 years)
-    
-    Returns:
-        int: Number of records deleted
-    """
-    session = db_utils.get_db_session()
-    try:
-        cutoff_date = datetime.datetime.utcnow() - datetime.timedelta(days=days_to_keep)
-        
-        # Delete from piidata
-        delete_query = piidata_table.delete().where(
-            piidata_table.c.createdAt < cutoff_date
-        )
-        result = session.execute(delete_query)
-        deleted_count = result.rowcount
-        
-        # Delete orphaned piientity records
-        # (This would need a more complex query in production)
+            if result.fetchone()['count'] == 0:
+                # Insert new record
+                insert_query = """
+                    INSERT INTO PIIEntity (uuid, piiType, originalData, fakeDataType, fakeData, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """
+                session.execute(insert_query,
+                              (record['uuid'], record['piiType'], record['originalData'],
+                               record['fakeDataType'], record['fakeData'], datetime.utcnow()))
         
         session.commit()
-        return deleted_count
+        logger.info(f"Successfully inserted {len(records)} PII entity records")
         
-    finally:
-        session.close()
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error in bulk_insert_piientity: {e}")
+        raise
+
+
+def insert_piidata(masterid, original, anonymized, method, metadata=None):
+    """
+    Insert a record of anonymization/de-anonymization operation.
+    
+    Args:
+        masterid: The master UUID
+        original: Original data
+        anonymized: Anonymized data
+        method: The method used (ANONYMIZE, DE-ANONYMIZE, etc.)
+        metadata: Additional metadata as JSON string
+    """
+    try:
+        insert_query = """
+            INSERT INTO PIIData (uuid, originalData, anonymizedData, method, metadata, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """
+        session.execute(insert_query,
+                      (masterid, original, anonymized, method, metadata, datetime.utcnow()))
+        session.commit()
+        
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error in insert_piidata: {e}")
+        raise
+
+
+def get_anonymization_statistics(masterid=None):
+    """
+    Get anonymization statistics for a user or globally.
+    Enhanced to properly count all entity types including enhanced anonymization.
+    """
+    try:
+        # Standard PII types
+        standard_pii_types = [
+            'NAME', 'EMAIL', 'PHONE_NUMBER', 'SSN', 'ADDRESS', 
+            'DATE', 'CREDIT_DEBIT_NUMBER', 'ZIP', 'URL', 'IP_ADDRESS',
+            'MAC_ADDRESS', 'LICENSE_PLATE', 'BANK_ACCOUNT', 'DOB'
+        ]
+        
+        # Medical entity types
+        medical_types = [
+            'DIAGNOSIS', 'MEDICATION', 'MRN', 'PROVIDER_ID', 'INSURANCE_ID',
+            'LAB_VALUE', 'PROCEDURE', 'MEDICAL_CONDITION', 'CLINICAL_TRIAL_ID',
+            'ORGANIZATION', 'JOB_TITLE', 'CLINICAL_NOTE', 'SLEEP_PATTERN',
+            'PSYCHIATRIC_SYMPTOM', 'DAILY_ACTIVITY'
+        ]
+        
+        # Enhanced anonymization types
+        enhanced_types = [
+            'JSON_KEY', 'JSON_STRUCTURE', 'GENERIC_VALUE'
+        ]
+        
+        if masterid:
+            # Get statistics for specific user
+            query = """
+                SELECT piiType, COUNT(*) as count 
+                FROM PIIEntity 
+                WHERE uuid = %s 
+                GROUP BY piiType
+            """
+            result = session.execute(query, (masterid,))
+        else:
+            # Get global statistics
+            query = """
+                SELECT piiType, COUNT(*) as count 
+                FROM PIIEntity 
+                GROUP BY piiType
+            """
+            result = session.execute(query)
+        
+        # Process results
+        entity_types = {}
+        total_entities = 0
+        medical_entities = 0
+        pii_entities = 0
+        enhanced_entities = 0
+        
+        for row in result:
+            pii_type = row['piiType']
+            count = row['count']
+            
+            # Add to entity types
+            entity_types[pii_type] = count
+            total_entities += count
+            
+            # Categorize
+            if pii_type in standard_pii_types:
+                pii_entities += count
+            elif pii_type in medical_types:
+                medical_entities += count
+            elif pii_type in enhanced_types:
+                enhanced_entities += count
+            else:
+                # Unknown type - could be custom
+                medical_entities += count  # Assume medical if not standard
+        
+        # Get additional statistics from PIIData table
+        if masterid:
+            data_query = """
+                SELECT method, COUNT(*) as count 
+                FROM PIIData 
+                WHERE uuid = %s 
+                GROUP BY method
+            """
+            data_result = session.execute(data_query, (masterid,))
+        else:
+            data_query = """
+                SELECT method, COUNT(*) as count 
+                FROM PIIData 
+                GROUP BY method
+            """
+            data_result = session.execute(data_query)
+        
+        operations = {}
+        for row in data_result:
+            operations[row['method']] = row['count']
+        
+        return {
+            'total_entities': total_entities,
+            'medical_entities': medical_entities,
+            'pii_entities': pii_entities,
+            'enhanced_entities': enhanced_entities,
+            'entity_types': entity_types,
+            'operations': operations,
+            'summary': {
+                'unique_entity_types': len(entity_types),
+                'anonymizations': operations.get('ANONYMIZE', 0) + 
+                                operations.get('ANONYMIZE_JSON', 0) + 
+                                operations.get('ANONYMIZE_JSON_ENHANCED', 0),
+                'de_anonymizations': operations.get('DE-ANONYMIZE', 0) + 
+                                   operations.get('DE_ANONYMIZE_JSON', 0) + 
+                                   operations.get('DE_ANONYMIZE_JSON_ENHANCED', 0)
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting anonymization statistics: {e}")
+        return {
+            'total_entities': 0,
+            'medical_entities': 0,
+            'pii_entities': 0,
+            'enhanced_entities': 0,
+            'entity_types': {},
+            'error': str(e)
+        }
+
+
+def cleanup_old_records(days=90):
+    """
+    Clean up old anonymization records.
+    
+    Args:
+        days: Number of days to keep records
+    """
+    try:
+        cutoff_date = datetime.utcnow() - timedelta(days=days)
+        
+        # Delete old PIIData records
+        delete_data_query = """
+            DELETE FROM PIIData 
+            WHERE created_at < %s
+        """
+        result = session.execute(delete_data_query, (cutoff_date,))
+        data_deleted = result.rowcount
+        
+        # Delete orphaned PIIEntity records
+        delete_entity_query = """
+            DELETE FROM PIIEntity 
+            WHERE uuid NOT IN (SELECT DISTINCT uuid FROM PIIMaster)
+        """
+        result = session.execute(delete_entity_query)
+        entity_deleted = result.rowcount
+        
+        session.commit()
+        
+        return {
+            'data_records_deleted': data_deleted,
+            'entity_records_deleted': entity_deleted
+        }
+        
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error in cleanup_old_records: {e}")
+        raise
+
+
+def get_user_summary(identity, identityType):
+    """
+    Get a summary of anonymization activity for a specific user.
+    
+    Args:
+        identity: User identifier
+        identityType: Type of identifier
+    
+    Returns:
+        Dictionary with user activity summary
+    """
+    try:
+        masterid = get_piimaster_uuid(identity, identityType, insert=False)
+        
+        if not masterid:
+            return {
+                'error': 'User not found',
+                'identity': identity,
+                'identityType': identityType
+            }
+        
+        # Get entity counts
+        entity_query = """
+            SELECT piiType, COUNT(*) as count
+            FROM PIIEntity
+            WHERE uuid = %s
+            GROUP BY piiType
+        """
+        entity_result = session.execute(entity_query, (masterid,))
+        
+        entities = {}
+        for row in entity_result:
+            entities[row['piiType']] = row['count']
+        
+        # Get operation counts
+        operation_query = """
+            SELECT method, COUNT(*) as count
+            FROM PIIData
+            WHERE uuid = %s
+            GROUP BY method
+        """
+        operation_result = session.execute(operation_query, (masterid,))
+        
+        operations = {}
+        for row in operation_result:
+            operations[row['method']] = row['count']
+        
+        # Get first and last activity
+        activity_query = """
+            SELECT MIN(created_at) as first_activity, MAX(created_at) as last_activity
+            FROM PIIData
+            WHERE uuid = %s
+        """
+        activity_result = session.execute(activity_query, (masterid,))
+        activity = activity_result.fetchone()
+        
+        return {
+            'masterid': masterid,
+            'identity': identity,
+            'identityType': identityType,
+            'entities': entities,
+            'operations': operations,
+            'first_activity': activity['first_activity'].isoformat() if activity['first_activity'] else None,
+            'last_activity': activity['last_activity'].isoformat() if activity['last_activity'] else None,
+            'total_entities': sum(entities.values()),
+            'total_operations': sum(operations.values())
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in get_user_summary: {e}")
+        return {
+            'error': str(e),
+            'identity': identity,
+            'identityType': identityType
+        }
+
+
+# Table creation statements (for reference)
+CREATE_TABLES_SQL = """
+-- Master table for identities
+CREATE TABLE IF NOT EXISTS PIIMaster (
+    uuid VARCHAR(36) PRIMARY KEY,
+    identity VARCHAR(255) NOT NULL,
+    identityType VARCHAR(50) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_identity (identity, identityType),
+    INDEX idx_identity_type (identityType)
+);
+
+-- Entity mappings table
+CREATE TABLE IF NOT EXISTS PIIEntity (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    uuid VARCHAR(36) NOT NULL,
+    piiType VARCHAR(50) NOT NULL,
+    originalData TEXT NOT NULL,
+    fakeDataType VARCHAR(50) NOT NULL,
+    fakeData TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (uuid) REFERENCES PIIMaster(uuid),
+    INDEX idx_uuid (uuid),
+    INDEX idx_pii_type (piiType),
+    UNIQUE KEY unique_mapping (uuid, piiType, originalData(255))
+);
+
+-- Anonymization operations table
+CREATE TABLE IF NOT EXISTS PIIData (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    uuid VARCHAR(36) NOT NULL,
+    originalData LONGTEXT,
+    anonymizedData LONGTEXT,
+    method VARCHAR(50) NOT NULL,
+    metadata JSON,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (uuid) REFERENCES PIIMaster(uuid),
+    INDEX idx_uuid_method (uuid, method),
+    INDEX idx_created_at (created_at)
+);
+
+-- Audit log table for HIPAA compliance
+CREATE TABLE IF NOT EXISTS PIIAuditLog (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    uuid VARCHAR(36),
+    action VARCHAR(50) NOT NULL,
+    user_context JSON,
+    success BOOLEAN DEFAULT TRUE,
+    error_message TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_uuid_action (uuid, action),
+    INDEX idx_created_at (created_at)
+);
+"""
