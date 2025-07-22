@@ -1,0 +1,6 @@
+echo "flask
+boto3
+pymysql
+sqlalchemy
+faker
+cryptography" > requirements.txt
