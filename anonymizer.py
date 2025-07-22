@@ -574,7 +574,18 @@ def should_anonymize_key(key):
         'referring_provider', 'clinic', 'hospital', 'service',
         'clinician', 'consultant', 'psychiatrist', 'psychologist',
         'therapist', 'counselor', 'nurse', 'role', 'reason',
-        'note', 'comment', 'description', 'summary'
+        'note', 'comment', 'description', 'summary',
+        # Medical symptom keywords
+        'symptom', 'symptoms', 'challenge', 'challenges',
+        'pattern', 'patterns', 'condition', 'conditions',
+        'disorder', 'disorders', 'impairment', 'disease',
+        'syndrome', 'illness', 'ailment', 'complaint',
+        'anxiety', 'depression', 'delusion', 'hallucination',
+        'apathy', 'agitation', 'irritability',
+        # Daily living activities
+        'activities', 'living', 'laundry', 'shopping',
+        'housekeeping', 'communication', 'transportation',
+        'food_preparation', 'managing_finances', 'managing_medications'
     ]
     
     key_lower = key.lower()
@@ -589,7 +600,9 @@ def _anonymize_value(key, value, masterid, existing_rows, records):
     if value is None or value == '':
         return value, []
         
-    # Handle lists (like the clinicians array)
+    new_records = []
+    
+    # Handle lists (like the clinicians array or symptom arrays)
     if isinstance(value, list):
         anonymized_list = []
         for item in value:
@@ -597,17 +610,42 @@ def _anonymize_value(key, value, masterid, existing_rows, records):
                 anon_item, _ = _anonymize_json_recursive(item, masterid, existing_rows, records)
                 anonymized_list.append(anon_item)
             else:
-                anon_val, new_recs = _anonymize_value(key, item, masterid, existing_rows, records)
-                records.extend(new_recs)
-                anonymized_list.append(anon_val)
-        return anonymized_list, []
+                # For string items in medical arrays, we need to anonymize each one
+                if item and isinstance(item, str):
+                    # Determine the appropriate PII type based on the key
+                    pii_type = determine_pii_type_from_key(key)
+                    
+                    # Check if we already have a fake value
+                    fake_data = if_exists(existing_rows, pii_type, str(item))
+                    if fake_data is None:
+                        fake_data = if_exists(records, pii_type, str(item))
+                        if fake_data is None:
+                            # Generate new fake data
+                            try:
+                                fake_data_generator, fake_data = generate_fake_data(pii_type)
+                            except:
+                                fake_data = _generate_generic_fake_data(pii_type, str(item))
+                                fake_data_generator = 'Generic_Handler'
+                            
+                            new_record = {
+                                'uuid': masterid,
+                                'piiType': pii_type,
+                                'originalData': str(item),
+                                'fakeDataType': fake_data_generator,
+                                'fakeData': fake_data
+                            }
+                            records.append(new_record)
+                            new_records.append(new_record)
+                    
+                    anonymized_list.append(fake_data)
+                else:
+                    anonymized_list.append(item)
+        return anonymized_list, new_records  # Return the new_records!
     
     # Handle nested objects
     if isinstance(value, dict):
         return _anonymize_json_recursive(value, masterid, existing_rows, records)
         
-    new_records = []
-    
     # Convert value to string for processing
     str_value = str(value)
     
@@ -696,7 +734,25 @@ def _generate_generic_fake_data(pii_type, original_value):
             'general health consultation',
             'clinical review and planning',
             'medical evaluation and care planning',
-            'health status assessment'
+            'health status assessment',
+            'difficulty with daily activities',
+            'requires assistance with tasks',
+            'independent in daily activities',
+            'minimal assistance needed'
+        ],
+        'MEDICAL_CONDITION': [
+            'regular sleep patterns',
+            'occasional sleep disturbance',
+            'restful sleep',
+            'interrupted sleep patterns',
+            'stable mood',
+            'mild mood changes',
+            'no significant symptoms',
+            'manageable symptoms',
+            'improving symptoms',
+            'stable condition',
+            'periodic symptoms',
+            'controlled symptoms'
         ],
         'MEDICATION': [
             'Acetaminophen 500mg',
@@ -813,8 +869,17 @@ def determine_pii_type_from_key(key):
         return 'JOB_TITLE'
     elif 'date' in key_lower:
         return 'DATE'
-    elif 'diagnosis' in key_lower or 'condition' in key_lower:
+    elif any(x in key_lower for x in ['diagnosis', 'condition', 'disorder', 'syndrome', 
+                                      'disease', 'illness', 'impairment', 'challenge']):
         return 'DIAGNOSIS'
+    elif any(x in key_lower for x in ['symptom', 'symptoms', 'pattern', 'patterns',
+                                      'anxiety', 'depression', 'delusion', 'hallucination',
+                                      'apathy', 'agitation', 'irritability']):
+        return 'MEDICAL_CONDITION'
+    elif any(x in key_lower for x in ['activities', 'living', 'laundry', 'shopping',
+                                      'housekeeping', 'communication', 'transportation',
+                                      'food_preparation', 'managing_finances', 'managing_medications']):
+        return 'CLINICAL_NOTE'
     elif any(x in key_lower for x in ['phone', 'tel', 'mobile', 'cell']):
         return 'PHONE_NUMBER'
     elif 'email' in key_lower:
