@@ -573,7 +573,8 @@ def should_anonymize_key(key):
         'ssn', 'mrn', 'id', 'diagnosis', 'medication', 
         'referring_provider', 'clinic', 'hospital', 'service',
         'clinician', 'consultant', 'psychiatrist', 'psychologist',
-        'therapist', 'counselor', 'nurse', 'role'
+        'therapist', 'counselor', 'nurse', 'role', 'reason',
+        'note', 'comment', 'description', 'summary'
     ]
     
     key_lower = key.lower()
