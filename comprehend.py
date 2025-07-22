@@ -488,6 +488,51 @@ def generate_fake_data(entity_type: str) -> Tuple[str, str]:
         ]
         return 'medical_faker', random.choice(notes)
     
+    elif entity_type == 'SLEEP_PATTERN':
+        patterns = [
+            'regular sleep schedule',
+            'restful sleep throughout night',
+            'occasional sleep interruptions',
+            'early morning awakening',
+            'difficulty falling asleep',
+            'frequent nighttime awakenings',
+            'excessive daytime sleepiness',
+            'normal sleep patterns',
+            'light sleep',
+            'deep sleep cycles'
+        ]
+        return 'medical_faker', random.choice(patterns)
+    
+    elif entity_type == 'PSYCHIATRIC_SYMPTOM':
+        symptoms = [
+            'mild symptoms during adjustment period',
+            'symptoms well-controlled with treatment',
+            'occasional mild symptoms',
+            'improving symptoms with therapy',
+            'stable mood and behavior',
+            'periodic mild symptoms',
+            'symptoms responding to treatment',
+            'manageable symptoms with support',
+            'minimal symptoms observed',
+            'symptoms stable on current regimen'
+        ]
+        return 'medical_faker', random.choice(symptoms)
+    
+    elif entity_type == 'DAILY_ACTIVITY':
+        activities = [
+            'requires minimal assistance',
+            'independent with supervision',
+            'needs occasional support',
+            'manages with adaptive equipment',
+            'performs activity with reminders',
+            'completes task independently',
+            'requires setup assistance only',
+            'needs verbal cuing',
+            'independent in familiar settings',
+            'manages with written instructions'
+        ]
+        return 'medical_faker', random.choice(activities)
+    
     # Generic fallback
     else:
         return 'generic', f"[REDACTED-{entity_type}]"
