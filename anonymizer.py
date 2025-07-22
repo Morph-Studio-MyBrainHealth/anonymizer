@@ -835,40 +835,52 @@ def _generate_business_value(value_type, original_value):
 
 def _distribute_into_template(template, anonymized_items):
     """
-    Distribute anonymized items into the business template structure.
-    This creates a completely different structure from the original.
+    FIXED VERSION: Distribute anonymized items into the business template structure.
+    Ensures values are stored in retrievable locations.
     """
     # Get the main container from template
     main_key = list(template.keys())[0]
     container = template[main_key]
     
+    # Keep track of where we put each value for debugging
+    value_locations = {}
+    
     # Distribute items across different sections
     for i, (key, value) in enumerate(anonymized_items):
         section = i % 3  # Rotate through sections
         
-        if section == 0 and isinstance(container.get(list(container.keys())[0]), list):
-            # Add to first list
-            container[list(container.keys())[0]].append({key: value})
-        elif section == 1 and len(container) > 1:
-            # Add to dictionary section
+        if section == 0:
+            # Add to first list as a dictionary item
+            list_key = [k for k in container.keys() if isinstance(container[k], list)][0]
+            item = {key: value}
+            container[list_key].append(item)
+            value_locations[f"{key}:{value}"] = f"{main_key}.{list_key}[{len(container[list_key])-1}]"
+            
+        elif section == 1:
+            # Add to dictionary section directly
             dict_key = [k for k in container.keys() if isinstance(container[k], dict)][0]
             container[dict_key][key] = value
+            value_locations[f"{key}:{value}"] = f"{main_key}.{dict_key}.{key}"
+            
         else:
-            # Add to last list or create new entry
+            # Add to last list
             list_keys = [k for k in container.keys() if isinstance(container[k], list)]
             if list_keys:
-                container[list_keys[-1]].append({key: value})
+                list_key = list_keys[-1]
+                item = {key: value}
+                container[list_key].append(item)
+                value_locations[f"{key}:{value}"] = f"{main_key}.{list_key}[{len(container[list_key])-1}]"
     
-    # Add some random padding to obscure array lengths
+    # Add some padding but keep it minimal to not obscure data
     for key, value in container.items():
         if isinstance(value, list):
-            # Randomly add or remove items to obscure original length
-            target_length = random.randint(3, 8)
-            while len(value) < target_length:
+            # Only add 1-2 dummy items
+            while len(value) < 2:
                 value.append({"placeholder": f"Reserved-{random.randint(100,999)}"})
-            if len(value) > target_length:
-                value = value[:target_length]
-            container[key] = value
+    
+    if DEBUG_MODE:
+        print(f"[DEBUG] Distributed {len(anonymized_items)} items")
+        print(f"[DEBUG] Value locations sample: {list(value_locations.items())[:3]}")
     
     return template
 
@@ -894,10 +906,13 @@ def de_anonymize_json(identity, identityType, json_data, context=None):
 
 def de_anonymize_json_enhanced(identity, identityType, json_data, context=None):
     """
-    De-anonymize JSON that was transformed with enhanced anonymization.
-    Reconstructs the original structure and values.
+    FIXED VERSION: De-anonymize JSON that was transformed with enhanced anonymization.
+    Reconstructs the original structure and values with better debugging.
     """
     try:
+        if DEBUG_MODE:
+            print(f"[DEBUG] Starting de-anonymization for identity: {identity}")
+            
         # Parse JSON if string
         if isinstance(json_data, str):
             data = json.loads(json_data)
@@ -906,11 +921,28 @@ def de_anonymize_json_enhanced(identity, identityType, json_data, context=None):
             
         masterid = get_piimaster_uuid(identity, identityType, insert=False)
         
+        if not masterid:
+            if DEBUG_MODE:
+                print(f"[DEBUG] No masterid found for identity: {identity}")
+            return {
+                "statusCode": 200,
+                "body": json.dumps({
+                    "result": data,
+                    "entities_restored": 0
+                })
+            }
+        
         # Log de-anonymization access
         log_phi_access(masterid, 'DE_ANONYMIZE_JSON_ENHANCED', 'json_data', context)
         
         # Get all PII mappings for user
         rows = get_piientity_data(masterid)
+        
+        if DEBUG_MODE:
+            print(f"[DEBUG] Found {len(rows)} PII mappings")
+            # Show sample mappings
+            for row in rows[:5]:
+                print(f"[DEBUG] Mapping: {row['piiType']} - {row['fakeData'][:30]}... -> {row['originalData'][:30]}...")
         
         if not rows:
             return {
@@ -929,39 +961,67 @@ def de_anonymize_json_enhanced(identity, identityType, json_data, context=None):
             if row['piiType'] == 'JSON_STRUCTURE':
                 structure_map = json.loads(row['originalData'])
                 structure_id = row['fakeData']
+                if DEBUG_MODE:
+                    print(f"[DEBUG] Found structure map with ID: {structure_id}")
                 break
         
         if not structure_map:
+            if DEBUG_MODE:
+                print(f"[DEBUG] No structure map found, falling back to simple de-anonymization")
             # Fall back to regular de-anonymization
             return _de_anonymize_json_simple(identity, identityType, json_data, context)
         
         # Extract all anonymized values from the business structure
         anonymized_values = _extract_from_business_structure(data)
         
+        if DEBUG_MODE:
+            print(f"[DEBUG] Extracted {len(anonymized_values)} values from business structure")
+        
         # Create reverse mappings
-        key_mapping = {row['fakeData']: row['originalData'] 
-                      for row in rows if row['piiType'] == 'JSON_KEY'}
-        value_mapping = {row['fakeData']: row['originalData'] 
-                        for row in rows if row['piiType'] != 'JSON_KEY' and row['piiType'] != 'JSON_STRUCTURE'}
+        key_mapping = {}
+        value_mapping = {}
+        
+        for row in rows:
+            if row['piiType'] == 'JSON_KEY':
+                key_mapping[row['fakeData']] = row['originalData']
+            elif row['piiType'] != 'JSON_STRUCTURE':
+                value_mapping[row['fakeData']] = row['originalData']
+        
+        if DEBUG_MODE:
+            print(f"[DEBUG] Created {len(key_mapping)} key mappings and {len(value_mapping)} value mappings")
         
         # Reconstruct flattened data
         flattened_original = {}
+        restored_count = 0
+        
         for fake_key, fake_value in anonymized_values.items():
             if fake_key != 'placeholder':
                 original_key = key_mapping.get(fake_key, fake_key)
                 original_value = value_mapping.get(fake_value, fake_value)
-                if original_key in key_mapping:  # Only include if it was actually mapped
+                
+                # Only include if we found original key mapping
+                if fake_key in key_mapping:
                     flattened_original[original_key] = original_value
+                    restored_count += 1
+                    if DEBUG_MODE and restored_count <= 3:
+                        print(f"[DEBUG] Restored: {original_key} = {original_value}")
+        
+        if DEBUG_MODE:
+            print(f"[DEBUG] Reconstructed {len(flattened_original)} flattened values")
         
         # Reconstruct nested structure from structure map
         reconstructed = _reconstruct_from_structure_map(structure_map, flattened_original)
+        
+        if DEBUG_MODE:
+            print(f"[DEBUG] Final reconstructed structure has keys: {list(reconstructed.keys()) if isinstance(reconstructed, dict) else 'Not a dict'}")
         
         # Store de-anonymization record
         metadata = {
             'gdpr_access_reason': context.get('access_reason') if context else None,
             'gdpr_authorized_by': context.get('authorized_by') if context else None,
             'timestamp': datetime.datetime.utcnow().isoformat(),
-            'structure_id': structure_id
+            'structure_id': structure_id,
+            'values_restored': restored_count
         }
         insert_piidata(masterid, json.dumps(reconstructed), json.dumps(data), 
                       'DE_ANONYMIZE_JSON_ENHANCED', metadata=json.dumps(metadata))
@@ -970,7 +1030,7 @@ def de_anonymize_json_enhanced(identity, identityType, json_data, context=None):
         audit_logger.log_success({
             'masterid': masterid,
             'action': 'DE_ANONYMIZE_JSON_ENHANCED',
-            'entities_restored': len(rows),
+            'entities_restored': restored_count,
             'timestamp': datetime.datetime.utcnow().isoformat()
         })
         
@@ -978,11 +1038,21 @@ def de_anonymize_json_enhanced(identity, identityType, json_data, context=None):
             "statusCode": 200,
             "body": json.dumps({
                 "result": reconstructed,
-                "entities_restored": len(rows)
+                "entities_restored": restored_count,
+                "debug": {
+                    "extracted_values": len(anonymized_values),
+                    "flattened_values": len(flattened_original),
+                    "key_mappings": len(key_mapping),
+                    "value_mappings": len(value_mapping)
+                } if DEBUG_MODE else {}
             })
         }
         
     except Exception as e:
+        import traceback
+        if DEBUG_MODE:
+            print(f"[DEBUG] Error in de_anonymize_json_enhanced: {str(e)}")
+            print(f"[DEBUG] Traceback: {traceback.format_exc()}")
         logger.error(e)
         audit_logger.log_error({
             'action': 'DE_ANONYMIZE_JSON_ENHANCED',
@@ -996,26 +1066,57 @@ def de_anonymize_json_enhanced(identity, identityType, json_data, context=None):
 
 
 def _extract_from_business_structure(data):
-    """Extract all key-value pairs from the business structure."""
+    """
+    FIXED VERSION: Extract all key-value pairs from the business structure.
+    Properly handles nested dictionaries and lists.
+    """
     extracted = {}
     
-    def extract_recursive(obj):
+    def extract_recursive(obj, path_prefix=''):
         if isinstance(obj, dict):
             for key, value in obj.items():
-                if isinstance(value, (str, int, float, bool)):
-                    extracted[key] = value
-                else:
-                    extract_recursive(value)
-        elif isinstance(obj, list):
-            for item in obj:
-                extract_recursive(item)
+                current_path = f"{path_prefix}.{key}" if path_prefix else key
+                
+                if isinstance(value, (str, int, float, bool)) and not str(value).startswith('Reserved-'):
+                    # Direct value in dictionary
+                    if key != 'placeholder':
+                        extracted[key] = value
+                elif isinstance(value, dict):
+                    # Nested dictionary
+                    extract_recursive(value, current_path)
+                elif isinstance(value, list):
+                    # List of items
+                    for idx, item in enumerate(value):
+                        if isinstance(item, dict):
+                            # Extract key-value pairs from dict items in list
+                            for k, v in item.items():
+                                if k != 'placeholder' and not str(v).startswith('Reserved-'):
+                                    extracted[k] = v
+                        elif isinstance(item, (str, int, float, bool)):
+                            # Direct values in list (less common in our structure)
+                            if not str(item).startswith('Reserved-'):
+                                extracted[f"{key}_{idx}"] = item
     
     extract_recursive(data)
+    
+    if DEBUG_MODE:
+        print(f"[DEBUG] Extracted {len(extracted)} key-value pairs")
+        print(f"[DEBUG] Sample extracted: {list(extracted.items())[:5]}")
+    
     return extracted
 
 
 def _reconstruct_from_structure_map(structure_map, flattened_data):
-    """Reconstruct the original nested structure from the map and flattened data."""
+    """
+    FIXED VERSION: Reconstruct the original nested structure from the map and flattened data.
+    Properly builds paths to match the flattened data format.
+    """
+    
+    def build_flattened_path(path):
+        """Convert structure map path to flattened key format"""
+        # Replace dots with __ and handle array indices
+        flattened = path.replace('.', '__').replace('[', '__').replace(']', '')
+        return flattened
     
     def reconstruct_recursive(struct_info):
         if struct_info['type'] == 'dict':
@@ -1038,7 +1139,11 @@ def _reconstruct_from_structure_map(structure_map, flattened_data):
             # Find the value in flattened data
             path = struct_info['path']
             # Convert path to flattened key format
-            flattened_key = path.replace('.', '__').replace('[', '__').replace(']', '')
+            flattened_key = build_flattened_path(path)
+            
+            if DEBUG_MODE and flattened_key in flattened_data:
+                print(f"[DEBUG] Found value for key: {flattened_key}")
+            
             return flattened_data.get(flattened_key)
     
     return reconstruct_recursive(structure_map)
