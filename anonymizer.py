@@ -475,15 +475,24 @@ def anonymize_json(identity, identityType, json_data, context=None):
         # Recursively anonymize the JSON
         anonymized_data, records = _anonymize_json_recursive(data, masterid, rows)
         
+        # Deduplicate records before bulk insert
+        unique_records = []
+        seen = set()
+        for record in records:
+            key = (record['uuid'], record['piiType'], record['originalData'])
+            if key not in seen:
+                seen.add(key)
+                unique_records.append(record)
+        
         # Bulk insert new PII mappings
-        if records:
-            bulk_insert_piientity(records)
+        if unique_records:
+            bulk_insert_piientity(unique_records)
             
         # Store anonymization record
         metadata = {
             'gdpr_purpose': context.get('purpose') if context else None,
             'gdpr_legal_basis': 'Article 9(2)(h)' if context else None,
-            'entities_processed': len(records),
+            'entities_processed': len(unique_records),
             'data_type': 'json'
         }
         insert_piidata(masterid, json.dumps(data), json.dumps(anonymized_data), 
@@ -493,7 +502,7 @@ def anonymize_json(identity, identityType, json_data, context=None):
         audit_logger.log_success({
             'masterid': masterid,
             'action': 'ANONYMIZE_JSON',
-            'entities_processed': len(records),
+            'entities_processed': len(unique_records),
             'timestamp': datetime.datetime.utcnow().isoformat()
         })
         
@@ -501,7 +510,7 @@ def anonymize_json(identity, identityType, json_data, context=None):
             "statusCode": 200,
             "body": json.dumps({
                 "result": anonymized_data,
-                "entities_detected": len(records),
+                "entities_detected": len(unique_records),
                 "compliance": {
                     "hipaa_safe_harbor": True,
                     "gdpr_pseudonymized": True
@@ -634,13 +643,16 @@ def _anonymize_value(key, value, masterid, existing_rows, records):
                                 'fakeDataType': fake_data_generator,
                                 'fakeData': fake_data
                             }
-                            records.append(new_record)
-                            new_records.append(new_record)
+                            # Only add if not already in records
+                            if not any(r['uuid'] == new_record['uuid'] and 
+                                     r['piiType'] == new_record['piiType'] and 
+                                     r['originalData'] == new_record['originalData'] for r in records):
+                                new_records.append(new_record)
                     
                     anonymized_list.append(fake_data)
                 else:
                     anonymized_list.append(item)
-        return anonymized_list, new_records  # Return the new_records!
+        return anonymized_list, new_records
     
     # Handle nested objects
     if isinstance(value, dict):
@@ -670,13 +682,18 @@ def _anonymize_value(key, value, masterid, existing_rows, records):
                     fake_data = _generate_generic_fake_data(pii_type, str_value)
                     fake_data_generator = 'Generic_Handler'
                 
-            new_records.append({
+            new_record = {
                 'uuid': masterid,
                 'piiType': pii_type,
                 'originalData': str_value,
                 'fakeDataType': fake_data_generator,
                 'fakeData': fake_data
-            })
+            }
+            # Only add if not already in records
+            if not any(r['uuid'] == new_record['uuid'] and 
+                     r['piiType'] == new_record['piiType'] and 
+                     r['originalData'] == new_record['originalData'] for r in records):
+                new_records.append(new_record)
     
     return fake_data, new_records
 
@@ -684,10 +701,14 @@ def _anonymize_value(key, value, masterid, existing_rows, records):
 def _generate_generic_fake_data(pii_type, original_value):
     """
     Generate generic fake data when specific generators aren't available.
-    Enhanced with more types.
+    Enhanced with more types. Uses hash of original value for consistent replacements.
     """
     import random
     import string
+    import hashlib
+    
+    # Use hash of original value to get consistent fake data
+    hash_val = int(hashlib.md5(original_value.encode()).hexdigest()[:8], 16)
     
     generic_replacements = {
         'DIAGNOSIS': [
@@ -788,7 +809,9 @@ def _generate_generic_fake_data(pii_type, original_value):
     
     # If we have specific replacements for this type, use them
     if pii_type in generic_replacements:
-        return random.choice(generic_replacements[pii_type])
+        options = generic_replacements[pii_type]
+        # Use hash to select consistent option
+        return options[hash_val % len(options)]
     
     # For NAME type, generate a realistic name
     if pii_type == 'NAME':
@@ -797,11 +820,15 @@ def _generate_generic_fake_data(pii_type, original_value):
         last_names = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 
                      'Miller', 'Davis', 'Rodriguez', 'Martinez', 'Anderson', 'Taylor']
         
+        # Use hash to select consistent names
+        first_name = first_names[hash_val % len(first_names)]
+        last_name = last_names[(hash_val >> 8) % len(last_names)]
+        
         # Check if original has a title
         if any(title in original_value for title in ['Dr.', 'Professor', 'Mr.', 'Mrs.', 'Ms.']):
-            return f"Dr. {random.choice(first_names)} {random.choice(last_names)}"
+            return f"Dr. {first_name} {last_name}"
         else:
-            return f"{random.choice(first_names)} {random.choice(last_names)}"
+            return f"{first_name} {last_name}"
     
     # Otherwise, generate a generic anonymized string
     return f"[Anonymized {pii_type}]"
