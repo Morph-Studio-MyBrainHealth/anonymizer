@@ -5,6 +5,7 @@ import datetime
 from typing import Dict, Any
 import random
 import hashlib
+from collections import OrderedDict
 
 import db_utils
 from comprehend import generate_fake_entities, detect_pii_data, anonymize, de_anonymize, generate_fake_data
@@ -452,21 +453,21 @@ def de_anonymizer(identity, identityType, conversation, context=None):
 
 def anonymize_json_simple(identity, identityType, json_data, context=None):
     """
-    Simple JSON anonymization that preserves structure and only anonymizes values.
-    This version keeps the original JSON structure intact.
+    Simple JSON anonymization that preserves structure and order.
     """
     try:
         if DEBUG_MODE:
             print(f"[DEBUG] Starting simple anonymization for identity: {identity}")
         
-        # Parse JSON if string
+        # Parse JSON preserving order
         if isinstance(json_data, str):
-            data = json.loads(json_data)
+            # Use object_pairs_hook to preserve order
+            data = json.loads(json_data, object_pairs_hook=OrderedDict)
         else:
             data = json_data
             
         if DEBUG_MODE:
-            print(f"[DEBUG] Input data keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
+            print(f"[DEBUG] Input data type: {type(data)}")
             
         masterid = get_piimaster_uuid(identity, identityType)
         if DEBUG_MODE:
@@ -480,11 +481,15 @@ def anonymize_json_simple(identity, identityType, json_data, context=None):
         if DEBUG_MODE:
             print(f"[DEBUG] Existing rows count: {len(rows) if rows else 0}")
         
-        # Recursively anonymize the JSON while preserving structure
-        anonymized_data, records = _anonymize_json_recursive_simple(data, masterid, rows)
+        # Recursively anonymize the JSON while preserving structure and order
+        anonymized_data, records = _anonymize_json_recursive_ordered(data, masterid, rows)
         
         if DEBUG_MODE:
             print(f"[DEBUG] Anonymization complete. Records created: {len(records)}")
+            if records:
+                print(f"[DEBUG] Sample records:")
+                for record in records[:5]:
+                    print(f"  - {record['piiType']}: '{record['originalData']}' -> '{record['fakeData']}'")
         
         # Deduplicate records
         unique_records = []
@@ -501,7 +506,7 @@ def anonymize_json_simple(identity, identityType, json_data, context=None):
         if unique_records:
             bulk_insert_piientity(unique_records)
             
-        # Store anonymization record
+        # Store anonymization record - preserve order in JSON
         metadata = {
             'gdpr_purpose': context.get('purpose') if context else None,
             'gdpr_legal_basis': 'Article 9(2)(h)' if context else None,
@@ -509,7 +514,11 @@ def anonymize_json_simple(identity, identityType, json_data, context=None):
             'data_type': 'json_simple'
         }
         
-        insert_piidata(masterid, json.dumps(data), json.dumps(anonymized_data), 
+        # Use json.dumps with sort_keys=False to preserve order
+        original_json = json.dumps(data, sort_keys=False)
+        anonymized_json = json.dumps(anonymized_data, sort_keys=False)
+        
+        insert_piidata(masterid, original_json, anonymized_json, 
                       'ANONYMIZE_JSON_SIMPLE', metadata=json.dumps(metadata))
         
         # Log success
@@ -530,7 +539,7 @@ def anonymize_json_simple(identity, identityType, json_data, context=None):
                     "gdpr_pseudonymized": True,
                     "structure_preserved": True
                 }
-            })
+            }, sort_keys=False)  # Preserve order in response
         }
         
     except Exception as e:
@@ -550,27 +559,27 @@ def anonymize_json_simple(identity, identityType, json_data, context=None):
         }
 
 
-def _anonymize_json_recursive_simple(data, masterid, existing_rows, records=None):
+def _anonymize_json_recursive_ordered(data, masterid, existing_rows, records=None):
     """
-    Recursively anonymize JSON data while preserving structure.
-    Only anonymizes values, not keys or structure.
+    Recursively anonymize JSON data while preserving structure and order.
+    Handles OrderedDict to maintain key order.
     """
     if records is None:
         records = []
         
-    if isinstance(data, dict):
-        anonymized = {}
+    if isinstance(data, (dict, OrderedDict)):
+        # Use OrderedDict to preserve order
+        anonymized = OrderedDict()
         for key, value in data.items():
-            # Check if the key indicates sensitive data
-            if should_anonymize_key(key):
-                # Anonymize the value based on the key context
-                anonymized[key], new_records = _anonymize_value_simple(
+            # Always try to anonymize values in sensitive keys
+            if should_anonymize_key(key) or _contains_medical_content(value):
+                anonymized[key], new_records = _anonymize_value_comprehensive(
                     key, value, masterid, existing_rows, records
                 )
                 records.extend(new_records)
             else:
-                # Recursively process non-sensitive keys
-                anonymized[key], _ = _anonymize_json_recursive_simple(
+                # Still check nested structures
+                anonymized[key], _ = _anonymize_json_recursive_ordered(
                     value, masterid, existing_rows, records
                 )
         return anonymized, records
@@ -578,20 +587,39 @@ def _anonymize_json_recursive_simple(data, masterid, existing_rows, records=None
     elif isinstance(data, list):
         anonymized = []
         for item in data:
-            anon_item, _ = _anonymize_json_recursive_simple(
+            anon_item, _ = _anonymize_json_recursive_ordered(
                 item, masterid, existing_rows, records
             )
             anonymized.append(anon_item)
         return anonymized, records
         
     else:
-        # It's a scalar value - check if it contains PII
-        return _anonymize_scalar(data, masterid, existing_rows, records)
+        # Check scalar values for PII/PHI
+        return _anonymize_scalar_value(data, masterid, existing_rows, records)
 
 
-def _anonymize_value_simple(key, value, masterid, existing_rows, records):
+def _contains_medical_content(value):
     """
-    Anonymize a value while preserving its type and structure.
+    Check if a value contains medical/symptom content that should be anonymized.
+    """
+    if isinstance(value, str):
+        medical_terms = [
+            'sleep', 'nap', 'nightmare', 'snoring', 'cognitive', 'impairment',
+            'alzheimer', 'anxiety', 'depression', 'stress', 'symptom',
+            'difficulty', 'trouble', 'managing', 'finding', 'driving'
+        ]
+        value_lower = value.lower()
+        return any(term in value_lower for term in medical_terms)
+    elif isinstance(value, list):
+        return any(_contains_medical_content(item) for item in value)
+    elif isinstance(value, dict):
+        return any(_contains_medical_content(v) for v in value.values())
+    return False
+
+
+def _anonymize_value_comprehensive(key, value, masterid, existing_rows, records):
+    """
+    Comprehensively anonymize a value, checking both key context and content.
     """
     if value is None or value == '':
         return value, []
@@ -602,67 +630,135 @@ def _anonymize_value_simple(key, value, masterid, existing_rows, records):
     if isinstance(value, list):
         anonymized_list = []
         for item in value:
-            if isinstance(item, dict):
-                anon_item, _ = _anonymize_json_recursive_simple(item, masterid, existing_rows, records)
+            if isinstance(item, (dict, OrderedDict)):
+                anon_item, _ = _anonymize_json_recursive_ordered(item, masterid, existing_rows, records)
                 anonymized_list.append(anon_item)
             elif isinstance(item, str) and item:
-                # Anonymize string items in arrays
-                pii_type = determine_pii_type_from_key(key)
-                
-                fake_data = if_exists(existing_rows, pii_type, str(item))
-                if not fake_data:
-                    fake_data = if_exists(records, pii_type, str(item))
+                # Always anonymize string items in medical contexts
+                if _contains_medical_content(item) or should_anonymize_key(key):
+                    pii_type = determine_pii_type_from_content(key, item)
+                    
+                    fake_data = if_exists(existing_rows, pii_type, str(item))
                     if not fake_data:
-                        fake_data = _generate_non_medical_fake_data(pii_type, str(item))
-                        
-                        new_record = {
-                            'uuid': masterid,
-                            'piiType': pii_type,
-                            'originalData': str(item),
-                            'fakeDataType': 'Non_Medical_Handler',
-                            'fakeData': fake_data
-                        }
-                        if not _record_exists(new_record, records):
-                            new_records.append(new_record)
-                
-                anonymized_list.append(fake_data)
+                        fake_data = if_exists(records, pii_type, str(item))
+                        if not fake_data:
+                            fake_data = _generate_non_medical_fake_data(pii_type, str(item))
+                            
+                            new_record = {
+                                'uuid': masterid,
+                                'piiType': pii_type,
+                                'originalData': str(item),
+                                'fakeDataType': 'Non_Medical_Handler',
+                                'fakeData': fake_data
+                            }
+                            if not _record_exists(new_record, records):
+                                new_records.append(new_record)
+                    
+                    anonymized_list.append(fake_data)
+                else:
+                    anonymized_list.append(item)
             else:
                 anonymized_list.append(item)
         return anonymized_list, new_records
     
     # Handle nested objects
-    if isinstance(value, dict):
-        return _anonymize_json_recursive_simple(value, masterid, existing_rows, records)
+    if isinstance(value, (dict, OrderedDict)):
+        return _anonymize_json_recursive_ordered(value, masterid, existing_rows, records)
     
     # Handle scalar values
     if isinstance(value, str) and value:
-        pii_type = determine_pii_type_from_key(key)
-        
-        fake_data = if_exists(existing_rows, pii_type, value)
-        if not fake_data:
-            fake_data = if_exists(records, pii_type, value)
+        # Check if the value itself contains medical content
+        if _contains_medical_content(value) or should_anonymize_key(key):
+            pii_type = determine_pii_type_from_content(key, value)
+            
+            fake_data = if_exists(existing_rows, pii_type, value)
             if not fake_data:
-                if pii_type == 'DATE':
-                    fake_data = anonymize_date_hipaa(value)
-                    fake_data_generator = 'HIPAA_Date_Handler'
-                else:
-                    fake_data = _generate_non_medical_fake_data(pii_type, value)
-                    fake_data_generator = 'Non_Medical_Handler'
+                fake_data = if_exists(records, pii_type, value)
+                if not fake_data:
+                    if pii_type == 'DATE':
+                        fake_data = anonymize_date_hipaa(value)
+                        fake_data_generator = 'HIPAA_Date_Handler'
+                    else:
+                        fake_data = _generate_non_medical_fake_data(pii_type, value)
+                        fake_data_generator = 'Non_Medical_Handler'
+                    
+                    new_record = {
+                        'uuid': masterid,
+                        'piiType': pii_type,
+                        'originalData': value,
+                        'fakeDataType': fake_data_generator,
+                        'fakeData': fake_data
+                    }
+                    if not _record_exists(new_record, records):
+                        new_records.append(new_record)
+            
+            return fake_data, new_records
+    
+    # Return non-string values as-is
+    return value, new_records
+
+
+def _anonymize_scalar_value(value, masterid, existing_rows, records):
+    """
+    Anonymize a scalar value if it contains medical content.
+    """
+    if value is None or value == '' or isinstance(value, (int, float, bool)):
+        return value, []
+        
+    # Convert to string and check for medical content
+    str_value = str(value)
+    if _contains_medical_content(str_value):
+        pii_type = 'MEDICAL_CONDITION'
+        
+        fake_data = if_exists(existing_rows, pii_type, str_value)
+        if not fake_data:
+            fake_data = if_exists(records, pii_type, str_value)
+            if not fake_data:
+                fake_data = _generate_non_medical_fake_data(pii_type, str_value)
                 
                 new_record = {
                     'uuid': masterid,
                     'piiType': pii_type,
-                    'originalData': value,
-                    'fakeDataType': fake_data_generator,
+                    'originalData': str_value,
+                    'fakeDataType': 'Non_Medical_Handler',
                     'fakeData': fake_data
                 }
-                if not _record_exists(new_record, records):
-                    new_records.append(new_record)
+                records.append(new_record)
         
-        return fake_data, new_records
+        return fake_data, []
     
-    # Return non-string values as-is
-    return value, new_records
+    return value, []
+
+
+def determine_pii_type_from_content(key, value):
+    """
+    Determine PII type from both key and value content.
+    Enhanced to better categorize medical content.
+    """
+    key_lower = key.lower()
+    value_lower = value.lower() if isinstance(value, str) else ''
+    
+    # Sleep-related content
+    if 'sleep' in key_lower or any(term in value_lower for term in ['sleep', 'nap', 'nightmare', 'snoring', 'insomnia']):
+        return 'SLEEP_PATTERN'
+    
+    # Cognitive challenges
+    elif 'cognitive' in key_lower or any(term in value_lower for term in ['cognitive', 'alzheimer', 'dementia', 'memory']):
+        return 'DIAGNOSIS'
+    
+    # Psychiatric symptoms
+    elif any(term in key_lower for term in ['psychiatric', 'neuropsychiatric']) or \
+         any(term in value_lower for term in ['anxiety', 'depression', 'delusion', 'hallucination', 'agitation']):
+        return 'PSYCHIATRIC_SYMPTOM'
+    
+    # Daily living activities
+    elif 'activities' in key_lower or 'living' in key_lower or \
+         any(term in value_lower for term in ['driving', 'managing', 'difficulty', 'trouble']):
+        return 'DAILY_ACTIVITY'
+    
+    # Use the original function for other cases
+    else:
+        return determine_pii_type_from_key(key)
 
 
 def _record_exists(record, records):
@@ -677,15 +773,15 @@ def _record_exists(record, records):
 
 def de_anonymize_json_simple(identity, identityType, json_data, context=None):
     """
-    Simple de-anonymization that preserves structure.
+    Simple de-anonymization that preserves structure and order.
     """
     try:
         if DEBUG_MODE:
             print(f"[DEBUG] Starting simple de-anonymization for identity: {identity}")
             
-        # Parse JSON if string
+        # Parse JSON preserving order
         if isinstance(json_data, str):
-            data = json.loads(json_data)
+            data = json.loads(json_data, object_pairs_hook=OrderedDict)
         else:
             data = json_data
             
@@ -697,7 +793,7 @@ def de_anonymize_json_simple(identity, identityType, json_data, context=None):
                 "body": json.dumps({
                     "result": data,
                     "entities_restored": 0
-                })
+                }, sort_keys=False)
             }
         
         # Log de-anonymization access
@@ -712,14 +808,22 @@ def de_anonymize_json_simple(identity, identityType, json_data, context=None):
                 "body": json.dumps({
                     "result": data,
                     "entities_restored": 0
-                })
+                }, sort_keys=False)
             }
         
         if DEBUG_MODE:
             print(f"[DEBUG] Found {len(rows)} PII mappings")
+            for row in rows[:10]:
+                print(f"[DEBUG] Mapping: {row['piiType']} - '{row['fakeData']}' -> '{row['originalData']}'")
+        
+        # Count actual replacements
+        replacement_count = [0]  # Use list to pass by reference
         
         # Recursively de-anonymize while preserving structure
-        de_anonymized_data = _de_anonymize_json_recursive(data, rows)
+        de_anonymized_data = _de_anonymize_json_recursive_ordered(data, rows, replacement_count)
+        
+        if DEBUG_MODE:
+            print(f"[DEBUG] Made {replacement_count[0]} replacements")
         
         # Store de-anonymization record
         metadata = {
@@ -727,14 +831,15 @@ def de_anonymize_json_simple(identity, identityType, json_data, context=None):
             'gdpr_authorized_by': context.get('authorized_by') if context else None,
             'timestamp': datetime.datetime.utcnow().isoformat()
         }
-        insert_piidata(masterid, json.dumps(de_anonymized_data), json.dumps(data), 
+        insert_piidata(masterid, json.dumps(de_anonymized_data, sort_keys=False), 
+                      json.dumps(data, sort_keys=False), 
                       'DE_ANONYMIZE_JSON_SIMPLE', metadata=json.dumps(metadata))
         
         # Log success
         audit_logger.log_success({
             'masterid': masterid,
             'action': 'DE_ANONYMIZE_JSON_SIMPLE',
-            'entities_restored': len(rows),
+            'entities_restored': replacement_count[0],
             'timestamp': datetime.datetime.utcnow().isoformat()
         })
         
@@ -742,11 +847,14 @@ def de_anonymize_json_simple(identity, identityType, json_data, context=None):
             "statusCode": 200,
             "body": json.dumps({
                 "result": de_anonymized_data,
-                "entities_restored": len(rows)
-            })
+                "entities_restored": replacement_count[0]
+            }, sort_keys=False)
         }
         
     except Exception as e:
+        import traceback
+        if DEBUG_MODE:
+            print(f"[DEBUG] Error: {traceback.format_exc()}")
         logger.error(e)
         audit_logger.log_error({
             'action': 'DE_ANONYMIZE_JSON_SIMPLE',
@@ -757,6 +865,39 @@ def de_anonymize_json_simple(identity, identityType, json_data, context=None):
             "statusCode": 500,
             "error": f"Error: {e}"
         }
+
+
+def _de_anonymize_json_recursive_ordered(data, rows, replacement_count):
+    """
+    Recursively de-anonymize JSON data while preserving structure and order.
+    """
+    if isinstance(data, (dict, OrderedDict)):
+        de_anonymized = OrderedDict()
+        for key, value in data.items():
+            de_anonymized[key] = _de_anonymize_json_recursive_ordered(value, rows, replacement_count)
+        return de_anonymized
+        
+    elif isinstance(data, list):
+        return [_de_anonymize_json_recursive_ordered(item, rows, replacement_count) for item in data]
+        
+    else:
+        # It's a scalar value - try to de-anonymize
+        if data is None or data == '':
+            return data
+            
+        # Try to find and replace fake data with original
+        result = str(data) if not isinstance(data, str) else data
+        
+        # Check each row for a match
+        for row in rows:
+            if row['fakeData'] == result:
+                if DEBUG_MODE:
+                    print(f"[DEBUG] Replacing '{row['fakeData']}' with '{row['originalData']}'")
+                replacement_count[0] += 1
+                return row['originalData']
+        
+        # Return the original value if no match found
+        return data
 
 
 def anonymize_json(identity, identityType, json_data, context=None):
@@ -778,8 +919,12 @@ def de_anonymize_json(identity, identityType, json_data, context=None):
         has_structure_map = any(row['piiType'] == 'JSON_STRUCTURE' for row in rows if row)
         
         if has_structure_map:
-            # Old enhanced anonymization
-            return de_anonymize_json_enhanced(identity, identityType, json_data, context)
+            # Old enhanced anonymization - not recommended
+            print("[WARNING] This data was anonymized with the old enhanced method that changes structure.")
+            return {
+                "statusCode": 400,
+                "error": "Data was anonymized with structure transformation. Please re-anonymize with current version."
+            }
     
     # Use simple de-anonymization
     return de_anonymize_json_simple(identity, identityType, json_data, context)
@@ -787,7 +932,7 @@ def de_anonymize_json(identity, identityType, json_data, context=None):
 
 def _de_anonymize_json_recursive(data, rows):
     """
-    Recursively de-anonymize JSON data while preserving structure.
+    Recursively de-anonymize JSON data (kept for backward compatibility).
     """
     if isinstance(data, dict):
         de_anonymized = {}
@@ -1151,28 +1296,6 @@ def should_anonymize_key(key):
     
     key_lower = key.lower()
     return any(keyword in key_lower for keyword in pii_keywords)
-
-
-# Keep the old enhanced functions for backward compatibility
-def anonymize_json_enhanced(identity, identityType, json_data, context=None):
-    """
-    Legacy enhanced JSON anonymization kept for backward compatibility.
-    This function creates new business structures - not recommended for new use.
-    """
-    # [Keep the original enhanced implementation for backward compatibility]
-    # This is the complex version that creates new structures
-    # Not included here to save space, but would be the original implementation
-    pass
-
-
-def de_anonymize_json_enhanced(identity, identityType, json_data, context=None):
-    """
-    Legacy enhanced de-anonymization kept for backward compatibility.
-    """
-    # [Keep the original enhanced implementation for backward compatibility]
-    # This handles the complex structure transformations
-    # Not included here to save space, but would be the original implementation
-    pass
 
 
 def lambda_handler(event, context):
