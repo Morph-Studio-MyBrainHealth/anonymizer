@@ -1,228 +1,170 @@
-import json
-import logging
+"""
+Database utilities for PII/PHI anonymization system
+This version uses SQLite for local testing
+"""
+
+import sqlite3
 import os
-import datetime
-from cryptography.fernet import Fernet
+from contextlib import contextmanager
 
-from sqlalchemy import create_engine, URL
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import QueuePool
-
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.ERROR)
-
-# Environment variables
-db_secret_name = os.getenv('MYSQL_DB_SECRET_NAME', 'z/sandbox/clientconfig/mysql')
-db_region_name = os.getenv('AWS_DB_REGION', 'us-east-2')
-encryption_key = os.getenv('HIPAA_ENCRYPTION_KEY', None)
-USE_LOCAL_DB = os.getenv('USE_LOCAL_DB', 'true').lower() == 'true'
-
-Session = None
-_encryption_cipher = None
+# Use SQLite for local testing
+DB_PATH = os.environ.get('DB_PATH', 'anonymizer.db')
 
 
-def get_encryption_cipher():
-    """Get or create encryption cipher for HIPAA compliance"""
-    global _encryption_cipher
-    if _encryption_cipher is None:
-        if encryption_key:
-            _encryption_cipher = Fernet(encryption_key.encode())
-        else:
-            # Generate a key for testing - in production, use KMS or secure key management
-            key = Fernet.generate_key()
-            _encryption_cipher = Fernet(key)
-            logger.warning("Using generated encryption key - not for production use!")
-    return _encryption_cipher
-
-
-def encrypt_sensitive_data(data: str) -> str:
-    """Encrypt sensitive data for HIPAA compliance"""
-    if not data:
-        return data
-    cipher = get_encryption_cipher()
-    return cipher.encrypt(data.encode()).decode()
-
-
-def decrypt_sensitive_data(encrypted_data: str) -> str:
-    """Decrypt sensitive data"""
-    if not encrypted_data:
-        return encrypted_data
-    cipher = get_encryption_cipher()
-    return cipher.decrypt(encrypted_data.encode()).decode()
-
-
-def get_db_secrets():
-    """Return database configuration for local testing"""
-    if USE_LOCAL_DB:
-        return {
-            'host': 'localhost',
-            'username': 'test',
-            'password': 'test',
-            'phidbname': 'test_anonymizer'
-        }
+class SQLiteSession:
+    """Wrapper to make SQLite work like SQLAlchemy session"""
     
-    # Production would use AWS Secrets Manager
-    # Not implemented for local testing
-    raise NotImplementedError("AWS Secrets Manager not configured for local testing")
+    def __init__(self, connection):
+        self.connection = connection
+        self.cursor = connection.cursor()
+        
+    def execute(self, query, params=None):
+        """Execute query with parameters"""
+        if params:
+            # Convert %s to ? for SQLite
+            query = query.replace('%s', '?')
+            result = self.cursor.execute(query, params)
+        else:
+            result = self.cursor.execute(query)
+        
+        # Return result wrapper
+        return SQLiteResult(result)
+    
+    def commit(self):
+        """Commit transaction"""
+        self.connection.commit()
+        
+    def rollback(self):
+        """Rollback transaction"""
+        self.connection.rollback()
 
 
-def create_db_engine(db_conn_string, debug_mode=False):
-    """Create database engine"""
-    if USE_LOCAL_DB:
-        # SQLite for local testing
-        return create_engine(
-            db_conn_string,
-            echo=debug_mode,
-            connect_args={'check_same_thread': False}  # Needed for SQLite
-        )
-    else:
-        # MySQL for production
-        return create_engine(
-            db_conn_string,
-            echo=debug_mode,
-            pool_size=5,
-            max_overflow=10,
-            pool_recycle=3600,
-            pool_pre_ping=True,
-            pool_use_lifo=True,
-            poolclass=QueuePool
-        )
-
-
-def create_db_session(engine):
-    global Session
-    if not Session:
-        Session = sessionmaker(
-            bind=engine,
-            expire_on_commit=False,
-            autoflush=False
-        )
-    return Session()
+class SQLiteResult:
+    """Wrapper for SQLite cursor to work like SQLAlchemy result"""
+    
+    def __init__(self, cursor):
+        self.cursor = cursor
+        self._rows = None
+        
+    def fetchone(self):
+        """Fetch one row as dict"""
+        row = self.cursor.fetchone()
+        if row:
+            columns = [desc[0] for desc in self.cursor.description]
+            return dict(zip(columns, row))
+        return None
+        
+    def fetchall(self):
+        """Fetch all rows as list of dicts"""
+        rows = self.cursor.fetchall()
+        if rows:
+            columns = [desc[0] for desc in self.cursor.description]
+            return [dict(zip(columns, row)) for row in rows]
+        return []
+        
+    def __iter__(self):
+        """Make result iterable"""
+        if self._rows is None:
+            self._rows = self.fetchall()
+        return iter(self._rows if self._rows else [])
+        
+    @property
+    def rowcount(self):
+        """Get row count"""
+        return self.cursor.rowcount
 
 
 def get_db_session():
-    global Session
-    if not Session:
-        if USE_LOCAL_DB:
-            # Use SQLite for local testing
-            database_url = "sqlite:///test_anonymizer.db"
-            logger.info("Using SQLite database for local testing")
-            
-            engine = create_db_engine(database_url)
-            
-            # Create tables if they don't exist
-            from db_objects import metadata
-            metadata.create_all(engine)
-            
-            Session = sessionmaker(bind=engine)
-        else:
-            # Production MySQL configuration
-            logger.info(f'Retrieving database access information')
-            
-            try:
-                secrets = get_db_secrets()
-            except:
-                logger.error("Failed to get database secrets")
-                raise
-            
-            db_name = secrets['phidbname']
-            
-            database_url = URL.create(
-                drivername="mysql+pymysql",
-                username=secrets['username'],
-                host=secrets['host'],
-                database=db_name,
-                port=int(secrets.get('port', 3306)),
-                password=secrets['password'],
-                query={
-                    'charset': 'utf8mb4',
-                    'use_unicode': 'true'
-                }
-            )
+    """Get database session"""
+    # Create tables if they don't exist
+    create_tables_if_needed()
+    
+    # Return SQLite session wrapper
+    conn = sqlite3.connect(DB_PATH)
+    return SQLiteSession(conn)
 
-            logger.info(f'Creating SQLAlchemy database engine for database: "{db_name}"')
-            engine = create_db_engine(database_url)
-            Session = sessionmaker(bind=engine)
-        
+
+def create_tables_if_needed():
+    """Create tables if they don't exist"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Create PIIMaster table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS PIIMaster (
+            uuid TEXT PRIMARY KEY,
+            identity TEXT NOT NULL,
+            identityType TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(identity, identityType)
+        )
+    ''')
+    
+    # Create PIIEntity table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS PIIEntity (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            uuid TEXT NOT NULL,
+            piiType TEXT NOT NULL,
+            originalData TEXT NOT NULL,
+            fakeDataType TEXT NOT NULL,
+            fakeData TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (uuid) REFERENCES PIIMaster(uuid),
+            UNIQUE(uuid, piiType, originalData)
+        )
+    ''')
+    
+    # Create PIIData table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS PIIData (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            uuid TEXT NOT NULL,
+            originalData TEXT,
+            anonymizedData TEXT,
+            method TEXT NOT NULL,
+            metadata TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (uuid) REFERENCES PIIMaster(uuid)
+        )
+    ''')
+    
+    # Create PIIAuditLog table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS PIIAuditLog (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            uuid TEXT,
+            action TEXT NOT NULL,
+            user_context TEXT,
+            success BOOLEAN DEFAULT 1,
+            error_message TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
+
+
+# For AWS environments, you would use this instead:
+"""
+import boto3
+import pymysql
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+def get_db_session():
+    # Get RDS credentials from environment or Secrets Manager
+    host = os.environ.get('DB_HOST')
+    user = os.environ.get('DB_USER')
+    password = os.environ.get('DB_PASSWORD')
+    database = os.environ.get('DB_NAME')
+    
+    # Create connection string
+    connection_string = f"mysql+pymysql://{user}:{password}@{host}/{database}"
+    
+    # Create engine and session
+    engine = create_engine(connection_string)
+    Session = sessionmaker(bind=engine)
     return Session()
-
-
-def test_db_connection():
-    """Test database connection for health checks"""
-    try:
-        session = get_db_session()
-        session.execute("SELECT 1")
-        session.close()
-        return True
-    except Exception as e:
-        logger.error(f"Database connection test failed: {str(e)}")
-        return False
-
-
-def get_db_engine():
-    """Get the database engine directly"""
-    session = get_db_session()
-    return session.bind
-
-
-def export_user_data(masterid: str) -> dict:
-    """Export all user data for GDPR compliance"""
-    from db_objects import piimaster_table, piidata_table, piientity_table
-    
-    session = get_db_session()
-    try:
-        user_data = {
-            'export_date': datetime.datetime.utcnow().isoformat(),
-            'masterid': masterid,
-            'piimaster': [],
-            'piidata': [],
-            'piientity': []
-        }
-        
-        # Get master record
-        master_query = piimaster_table.select().where(piimaster_table.c.uuid == masterid)
-        master_result = session.execute(master_query).fetchall()
-        for row in master_result:
-            user_data['piimaster'].append(dict(row._asdict()))
-        
-        # Get PII data records
-        data_query = piidata_table.select().where(piidata_table.c.uuid == masterid)
-        data_result = session.execute(data_query).fetchall()
-        for row in data_result:
-            record = dict(row._asdict())
-            user_data['piidata'].append(record)
-        
-        # Get PII entity records
-        entity_query = piientity_table.select().where(piientity_table.c.uuid == masterid)
-        entity_result = session.execute(entity_query).fetchall()
-        for row in entity_result:
-            record = dict(row._asdict())
-            user_data['piientity'].append(record)
-        
-        return user_data
-        
-    finally:
-        session.close()
-
-
-def delete_user_data(masterid: str) -> bool:
-    """Delete all user data for GDPR Article 17 compliance"""
-    from db_objects import piimaster_table, piidata_table, piientity_table
-    
-    session = get_db_session()
-    try:
-        # Delete in order due to foreign key constraints
-        session.execute(piidata_table.delete().where(piidata_table.c.uuid == masterid))
-        session.execute(piientity_table.delete().where(piientity_table.c.uuid == masterid))
-        session.execute(piimaster_table.delete().where(piimaster_table.c.uuid == masterid))
-        
-        session.commit()
-        logger.info(f"User data deleted for masterid: {masterid}")
-        return True
-        
-    except Exception as e:
-        session.rollback()
-        logger.error(f"Failed to delete user data: {str(e)}")
-        return False
-    finally:
-        session.close()
+"""
