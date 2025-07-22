@@ -318,6 +318,8 @@ HTML_TEMPLATE = '''
                 // Display any entities detected (for debugging)
                 if (data.entities_detected === 0) {
                     showWarning('No entities were detected for anonymization. Check if the anonymizer supports the data types in your JSON.');
+                } else {
+                    showSuccess(`Successfully anonymized ${data.entities_detected} entities.`);
                 }
                 
                 // Clear input
@@ -331,6 +333,11 @@ HTML_TEMPLATE = '''
         function showWarning(message) {
             const display = document.getElementById('entity-display');
             display.innerHTML = `<div class="entities" style="background: #fff3e0; border-left-color: #FF9800;">${message}</div>`;
+        }
+        
+        function showSuccess(message) {
+            const display = document.getElementById('entity-display');
+            display.innerHTML = `<div class="success">${message}</div>`;
         }
         
         async function detectEntities() {
@@ -471,10 +478,31 @@ HTML_TEMPLATE = '''
                 html += `Total Entities: ${data.total_entities}<br>`;
                 html += `Medical Entities: ${data.medical_entities}<br>`;
                 html += `PII Entities: ${data.pii_entities}<br>`;
-                html += '<strong>By Type:</strong><br>';
-                for (const [type, count] of Object.entries(data.entity_types)) {
-                    html += `${type}: ${count}<br>`;
+                html += `Enhanced Entities: ${data.enhanced_entities}<br>`;
+                
+                if (data.summary) {
+                    html += '<br><strong>Operations Summary:</strong><br>';
+                    html += `Total Anonymizations: ${data.summary.anonymizations}<br>`;
+                    html += `Total De-anonymizations: ${data.summary.de_anonymizations}<br>`;
+                    html += `Unique Entity Types: ${data.summary.unique_entity_types}<br>`;
                 }
+                
+                html += '<br><strong>By Type:</strong><br>';
+                if (data.entity_types && Object.keys(data.entity_types).length > 0) {
+                    for (const [type, count] of Object.entries(data.entity_types)) {
+                        html += `${type}: ${count}<br>`;
+                    }
+                } else {
+                    html += 'No entities recorded yet<br>';
+                }
+                
+                if (data.operations && Object.keys(data.operations).length > 0) {
+                    html += '<br><strong>Operations:</strong><br>';
+                    for (const [method, count] of Object.entries(data.operations)) {
+                        html += `${method}: ${count}<br>`;
+                    }
+                }
+                
                 html += '</div>';
                 
                 document.getElementById('entity-display').innerHTML = html;
@@ -561,42 +589,46 @@ Medications: Metoprolol 50mg daily, Metformin 500mg BID`,
 }`,
                 
                 json_nested: `{
-  "patient_record": {
-    "demographics": {
-      "name": "Robert Williams",
-      "dob": "22/08/1955",
-      "address": "789 Oak Avenue, Chicago, IL 60601",
-      "phone": "312-555-9876",
-      "email": "rwilliams@email.com"
-    },
-    "medical_info": {
-      "mrn": "CHI-456789",
-      "primary_diagnosis": "Alzheimer's Disease (F00.1)",
-      "secondary_diagnoses": [
-        "Hypertension (I10)",
-        "Type 2 Diabetes (E11.9)"
+  "current_symptoms": {
+    "sleep_patterns": [
+      "good sleep",
+      "daytime naps",
+      "nightmares",
+      "snoring",
+      "occasional talking during sleep"
+    ],
+    "physical_challenges": [],
+    "cognitive_challenges": [
+      "Mild Cognitive Impairment",
+      "Alzheimer's"
+    ],
+    "neuropsychiatric_symptoms": {
+      "other": [],
+      "apathy": [],
+      "anxiety": [
+        "developing symptoms of anxiety during stressful period"
       ],
-      "current_medications": [
-        {
-          "name": "Donepezil",
-          "dose": "10mg",
-          "frequency": "daily",
-          "prescriber": "Dr. Susan Martinez"
-        },
-        {
-          "name": "Memantine",
-          "dose": "20mg",
-          "frequency": "daily",
-          "prescriber": "Dr. Susan Martinez"
-        }
-      ]
+      "agitation": [],
+      "delusions": [],
+      "depression": [
+        "developing symptoms of depression during stressful period"
+      ],
+      "irritability": [],
+      "hallucinations": []
     },
-    "care_team": {
-      "primary_physician": "Dr. Susan Martinez",
-      "neurologist": "Dr. James Thompson",
-      "clinic": "Chicago Memory Care Center",
-      "last_visit": "10/Dec/2024",
-      "next_appointment": "10/Mar/2025"
+    "instrumental_activities_daily_living": {
+      "laundry": [],
+      "shopping": [],
+      "housekeeping": [],
+      "communication": [],
+      "transportation": [
+        "trouble finding your way while driving"
+      ],
+      "food_preparation": [],
+      "managing_finances": [
+        "difficulties managing finances"
+      ],
+      "managing_medications": []
     }
   }
 }`
@@ -728,7 +760,8 @@ def anonymize_json_endpoint():
             'stats': {
                 'entities_detected': body.get('entities_detected', 0),
                 'hipaa_compliant': body.get('compliance', {}).get('hipaa_safe_harbor', False),
-                'gdpr_compliant': body.get('compliance', {}).get('gdpr_pseudonymized', False)
+                'gdpr_compliant': body.get('compliance', {}).get('gdpr_pseudonymized', False),
+                'structure_obfuscated': body.get('compliance', {}).get('structure_obfuscated', False)
             }
         })
         
@@ -798,4 +831,4 @@ def stats_endpoint():
 # This must be at the module level, not inside a function!
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=True)  # Changed debug to True for testing
