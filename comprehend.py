@@ -1,12 +1,14 @@
 """
 Enhanced PII/PHI Detection and Anonymization Module
 Supports both standard PII and medical-specific data types
+Modified to use non-medical replacements for medical entities
 """
 
 import re
 import random
 import string
 import json
+import hashlib
 from typing import List, Dict, Tuple, Any
 from faker import Faker
 import boto3
@@ -300,12 +302,226 @@ def remove_overlapping_entities(entities: List[Dict[str, Any]]) -> List[Dict[str
     return cleaned
 
 
+def generate_non_medical_replacement(entity_type: str, original_value: str) -> str:
+    """
+    Generate non-medical replacement data for medical entities.
+    Uses hash for consistent replacements.
+    """
+    # Use hash of original value to get consistent fake data
+    hash_val = int(hashlib.md5(original_value.encode()).hexdigest()[:8], 16)
+    
+    non_medical_replacements = {
+        'DIAGNOSIS': [
+            'Blue Mountain Project',
+            'Sunrise Initiative',
+            'Green Valley Protocol',
+            'Ocean Wave Study',
+            'Silver Bridge Program',
+            'Golden Gate Analysis',
+            'Crystal River Method',
+            'Desert Sand Framework',
+            'Northern Light Process',
+            'Eastern Shore Approach',
+            'Maple Leaf System',
+            'Thunder Bay Model',
+            'Moonlight Strategy',
+            'Starlight Pattern',
+            'Rainbow Arc Design'
+        ],
+        'ORGANIZATION': [
+            'Alpine Resources Center',
+            'Riverside Associates',
+            'Oakwood Services',
+            'Pinehurst Group',
+            'Lakeside Institute',
+            'Mountain View Partners',
+            'Valley Stream Corp',
+            'Oceanside Enterprises',
+            'Hillcrest Solutions',
+            'Meadowbrook Systems',
+            'Northwind Analytics',
+            'Southgate Dynamics',
+            'Eastside Innovations',
+            'Westfield Operations',
+            'Central Park Agency'
+        ],
+        'MEDICATION': [
+            'Product Code A1B2',
+            'Item Number C3D4',
+            'Reference ID E5F6',
+            'Catalog Entry G7H8',
+            'Stock Code I9J0',
+            'Asset Tag K1L2',
+            'Inventory ID M3N4',
+            'Serial Code O5P6',
+            'Batch Number Q7R8',
+            'Lot Reference S9T0'
+        ],
+        'MRN': [
+            'REF-100234',
+            'ID-200567',
+            'NUM-300890',
+            'CODE-401234',
+            'TAG-502345',
+            'KEY-603456',
+            'SER-704567',
+            'DOC-805678',
+            'REC-906789',
+            'FILE-007890'
+        ],
+        'PROVIDER_ID': [
+            '1000000001',
+            '2000000002',
+            '3000000003',
+            '4000000004',
+            '5000000005',
+            '6000000006',
+            '7000000007',
+            '8000000008',
+            '9000000009',
+            '1000000010'
+        ],
+        'INSURANCE_ID': [
+            'POL123456789',
+            'MEM234567890',
+            'GRP345678901',
+            'PLN456789012',
+            'COV567890123',
+            'BEN678901234',
+            'SUB789012345',
+            'ACC890123456',
+            'REG901234567',
+            'SVC012345678'
+        ],
+        'LAB_VALUE': [
+            'Metric A: 42.7',
+            'Index B: 3.14',
+            'Score C: 98.6',
+            'Value D: 7.25',
+            'Reading E: 120',
+            'Result F: 0.85',
+            'Output G: 15.3',
+            'Level H: 6.02',
+            'Rate I: 72.0',
+            'Factor J: 1.618'
+        ],
+        'PROCEDURE': [
+            'Process 100-A',
+            'Method 200-B',
+            'Technique 300-C',
+            'Protocol 400-D',
+            'Operation 500-E',
+            'Function 600-F',
+            'Activity 700-G',
+            'Task 800-H',
+            'Action 900-I',
+            'Step 1000-J'
+        ],
+        'MEDICAL_CONDITION': [
+            'Factor X-12',
+            'Element Y-34',
+            'Component Z-56',
+            'Variable W-78',
+            'Parameter V-90',
+            'Attribute U-21',
+            'Property T-43',
+            'Feature S-65',
+            'Characteristic R-87',
+            'Aspect Q-09'
+        ],
+        'CLINICAL_TRIAL_ID': [
+            'TRIAL10000001',
+            'STUDY20000002',
+            'PROTO30000003',
+            'RESRCH40000004',
+            'TEST50000005',
+            'EVAL60000006',
+            'ASSESS70000007',
+            'REVIEW80000008',
+            'SURVEY90000009',
+            'PROJECT00000010'
+        ],
+        'JOB_TITLE': [
+            'Senior Analyst',
+            'Project Coordinator',
+            'Operations Manager',
+            'Technical Lead',
+            'Research Associate',
+            'Quality Specialist',
+            'Systems Administrator',
+            'Program Director',
+            'Data Architect',
+            'Process Engineer',
+            'Strategic Consultant',
+            'Regional Supervisor',
+            'Implementation Expert',
+            'Solutions Designer',
+            'Integration Specialist'
+        ],
+        'CLINICAL_NOTE': [
+            'standard review completed',
+            'routine evaluation performed',
+            'scheduled assessment done',
+            'periodic check finished',
+            'regular inspection conducted',
+            'systematic review executed',
+            'comprehensive analysis completed',
+            'detailed examination performed',
+            'thorough investigation done',
+            'methodical survey finished'
+        ],
+        'SLEEP_PATTERN': [
+            'Pattern Alpha-7',
+            'Sequence Beta-3',
+            'Rhythm Gamma-1',
+            'Cycle Delta-9',
+            'Phase Epsilon-4',
+            'Mode Zeta-2',
+            'State Eta-8',
+            'Form Theta-5',
+            'Type Iota-6',
+            'Configuration Kappa-0'
+        ],
+        'PSYCHIATRIC_SYMPTOM': [
+            'Status Green-Active',
+            'Condition Blue-Stable',
+            'State Yellow-Monitored',
+            'Phase Orange-Tracked',
+            'Level Purple-Observed',
+            'Mode Teal-Recorded',
+            'Type Silver-Noted',
+            'Form Gold-Documented',
+            'Pattern Bronze-Logged',
+            'Configuration Gray-Filed'
+        ],
+        'DAILY_ACTIVITY': [
+            'Process Type A1',
+            'Method Category B2',
+            'Approach Level C3',
+            'System Grade D4',
+            'Protocol Class E5',
+            'Procedure Rank F6',
+            'Operation Tier G7',
+            'Function Stage H8',
+            'Activity Phase I9',
+            'Task Mode J0'
+        ]
+    }
+    
+    if entity_type in non_medical_replacements:
+        options = non_medical_replacements[entity_type]
+        return options[hash_val % len(options)]
+    else:
+        return f"REF-{entity_type[:3]}-{hash_val % 10000:04d}"
+
+
 def generate_fake_data(entity_type: str) -> Tuple[str, str]:
     """
     Generate fake data based on entity type.
     Returns tuple of (generator_name, fake_value)
+    Modified to use non-medical replacements for medical entities.
     """
-    # Standard PII types
+    # Standard PII types - keep using Faker for these
     if entity_type == 'NAME':
         return 'faker', fake.name()
     elif entity_type == 'ADDRESS':
@@ -332,206 +548,20 @@ def generate_fake_data(entity_type: str) -> Tuple[str, str]:
         return 'faker', fake.license_plate()
     elif entity_type == 'BANK_ACCOUNT':
         return 'faker', fake.iban()
-    
-    # Medical-specific types
-    elif entity_type == 'DIAGNOSIS':
-        diagnoses = [
-            'Essential Hypertension (I10)',
-            'Type 2 Diabetes Mellitus (E11.9)',
-            'Major Depressive Disorder (F32.9)',
-            'Generalized Anxiety Disorder (F41.1)',
-            'Chronic Obstructive Pulmonary Disease (J44.0)',
-            'Coronary Artery Disease (I25.10)',
-            'Atrial Fibrillation (I48.91)',
-            'Hypothyroidism (E03.9)',
-            'Osteoarthritis (M19.90)',
-            'Gastroesophageal Reflux Disease (K21.9)',
-            'Hyperlipidemia (E78.5)',
-            'Asthma (J45.909)',
-            'Chronic Kidney Disease (N18.3)',
-            'Heart Failure (I50.9)',
-            'Migraine (G43.909)'
-        ]
-        return 'medical_faker', random.choice(diagnoses)
-    
-    elif entity_type == 'ORGANIZATION':
-        prefixes = ['Regional', 'Community', 'Metropolitan', 'Central', 'Premier', 
-                   'Advanced', 'Comprehensive', 'Integrated', 'Unity', 'Memorial']
-        types = ['Medical Center', 'Health Clinic', 'Hospital', 'Healthcare System', 
-                'Medical Group', 'Health Services', 'Care Center', 'Wellness Center']
-        return 'medical_faker', f"{random.choice(prefixes)} {random.choice(types)}"
-    
-    elif entity_type == 'MEDICATION':
-        medications = [
-            'Lisinopril 10mg',
-            'Metformin 500mg',
-            'Amlodipine 5mg',
-            'Atorvastatin 20mg',
-            'Omeprazole 20mg',
-            'Levothyroxine 50mcg',
-            'Metoprolol 25mg',
-            'Sertraline 50mg',
-            'Gabapentin 300mg',
-            'Losartan 50mg',
-            'Albuterol 90mcg',
-            'Fluoxetine 20mg',
-            'Pravastatin 40mg',
-            'Furosemide 40mg',
-            'Hydrochlorothiazide 25mg'
-        ]
-        return 'medical_faker', random.choice(medications)
-    
-    elif entity_type == 'MRN':
-        # Medical Record Number
-        prefix = random.choice(['MRN', 'MR', 'PT'])
-        number = random.randint(100000, 9999999)
-        return 'medical_faker', f"{prefix}-{number}"
-    
-    elif entity_type == 'PROVIDER_ID':
-        # NPI number format (10 digits)
-        return 'medical_faker', f"{random.randint(1000000000, 9999999999)}"
-    
-    elif entity_type == 'INSURANCE_ID':
-        letters = ''.join(random.choices(string.ascii_uppercase, k=3))
-        numbers = ''.join(random.choices(string.digits, k=9))
-        return 'medical_faker', f"{letters}{numbers}"
-    
-    elif entity_type == 'LAB_VALUE':
-        values = [
-            '120 mg/dL',
-            '7.2%',
-            '98.6°F',
-            '120/80 mmHg',
-            'Normal Range',
-            'Within Limits',
-            '5.5 mmol/L',
-            '140 mEq/L',
-            '4.5 g/dL',
-            '1.2 mg/dL'
-        ]
-        return 'medical_faker', random.choice(values)
-    
-    elif entity_type == 'PROCEDURE':
-        procedures = [
-            'Physical Examination',
-            'Laboratory Studies',
-            'Chest X-Ray',
-            'Electrocardiogram',
-            'Echocardiogram',
-            'CT Scan',
-            'MRI Brain',
-            'Colonoscopy',
-            'Upper Endoscopy',
-            'Pulmonary Function Test',
-            'Stress Test',
-            'Ultrasound Abdomen'
-        ]
-        return 'medical_faker', random.choice(procedures)
-    
-    elif entity_type == 'MEDICAL_CONDITION':
-        conditions = [
-            'Hypertension',
-            'Diabetes',
-            'Asthma',
-            'Arthritis',
-            'Depression',
-            'Anxiety',
-            'GERD',
-            'Allergies',
-            'Migraine',
-            'COPD',
-            'Hypothyroidism',
-            'Anemia'
-        ]
-        return 'medical_faker', random.choice(conditions)
-    
-    elif entity_type == 'CLINICAL_TRIAL_ID':
-        return 'medical_faker', f"NCT{random.randint(10000000, 99999999)}"
-    
     elif entity_type == 'DOB':
         # Generate a date of birth between 18 and 90 years ago
         days_ago = random.randint(18*365, 90*365)
         dob = datetime.now() - timedelta(days=days_ago)
         return 'faker', dob.strftime('%m/%d/%Y')
     
-    elif entity_type == 'JOB_TITLE':
-        titles = [
-            'Consultant Physician',
-            'Senior Specialist',
-            'Clinical Director',
-            'Medical Officer',
-            'Research Coordinator',
-            'Clinical Assistant',
-            'Healthcare Professional',
-            'Medical Consultant',
-            'Senior Clinician',
-            'Clinical Specialist',
-            'Nurse Practitioner',
-            'Physician Assistant',
-            'Research Assistant',
-            'Clinical Research Coordinator'
-        ]
-        return 'medical_faker', random.choice(titles)
-    
-    elif entity_type == 'CLINICAL_NOTE':
-        notes = [
-            'routine follow-up and assessment',
-            'standard clinical evaluation',
-            'comprehensive health review',
-            'periodic medical assessment',
-            'general health consultation',
-            'clinical review and planning',
-            'medical evaluation and care planning',
-            'health status assessment',
-            'diagnostic workup and evaluation',
-            'treatment planning and review'
-        ]
-        return 'medical_faker', random.choice(notes)
-    
-    elif entity_type == 'SLEEP_PATTERN':
-        patterns = [
-            'regular sleep schedule',
-            'restful sleep throughout night',
-            'occasional sleep interruptions',
-            'early morning awakening',
-            'difficulty falling asleep',
-            'frequent nighttime awakenings',
-            'excessive daytime sleepiness',
-            'normal sleep patterns',
-            'light sleep',
-            'deep sleep cycles'
-        ]
-        return 'medical_faker', random.choice(patterns)
-    
-    elif entity_type == 'PSYCHIATRIC_SYMPTOM':
-        symptoms = [
-            'mild symptoms during adjustment period',
-            'symptoms well-controlled with treatment',
-            'occasional mild symptoms',
-            'improving symptoms with therapy',
-            'stable mood and behavior',
-            'periodic mild symptoms',
-            'symptoms responding to treatment',
-            'manageable symptoms with support',
-            'minimal symptoms observed',
-            'symptoms stable on current regimen'
-        ]
-        return 'medical_faker', random.choice(symptoms)
-    
-    elif entity_type == 'DAILY_ACTIVITY':
-        activities = [
-            'requires minimal assistance',
-            'independent with supervision',
-            'needs occasional support',
-            'manages with adaptive equipment',
-            'performs activity with reminders',
-            'completes task independently',
-            'requires setup assistance only',
-            'needs verbal cuing',
-            'independent in familiar settings',
-            'manages with written instructions'
-        ]
-        return 'medical_faker', random.choice(activities)
+    # Medical-specific types - use non-medical replacements
+    elif entity_type in ['DIAGNOSIS', 'ORGANIZATION', 'MEDICATION', 'MRN', 'PROVIDER_ID',
+                        'INSURANCE_ID', 'LAB_VALUE', 'PROCEDURE', 'MEDICAL_CONDITION',
+                        'CLINICAL_TRIAL_ID', 'JOB_TITLE', 'CLINICAL_NOTE', 'SLEEP_PATTERN',
+                        'PSYCHIATRIC_SYMPTOM', 'DAILY_ACTIVITY']:
+        # Generate a random value to use as seed for consistent replacements
+        random_value = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
+        return 'non_medical_faker', generate_non_medical_replacement(entity_type, random_value)
     
     # Generic fallback
     else:
@@ -563,7 +593,15 @@ def generate_fake_entities(masterid: str, entities: List[Dict], existing_records
         
         # Generate new fake data if needed
         if not fake_data:
-            generator_name, fake_data = generate_fake_data(entity['Type'])
+            # For medical entities, use non-medical replacements
+            if entity['Type'] in ['DIAGNOSIS', 'ORGANIZATION', 'MEDICATION', 'MRN', 
+                                 'PROVIDER_ID', 'INSURANCE_ID', 'LAB_VALUE', 'PROCEDURE',
+                                 'MEDICAL_CONDITION', 'CLINICAL_TRIAL_ID']:
+                generator_name = 'non_medical_faker'
+                fake_data = generate_non_medical_replacement(entity['Type'], entity['originalData'])
+            else:
+                generator_name, fake_data = generate_fake_data(entity['Type'])
+            
             new_records.append({
                 'uuid': masterid,
                 'piiType': entity['Type'],
