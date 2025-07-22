@@ -576,6 +576,7 @@ def should_anonymize_key(key):
 def _anonymize_value(key, value, masterid, existing_rows, records):
     """
     Anonymize a value based on the key context.
+    Enhanced to handle cases where generate_fake_data might not support certain types.
     """
     if value is None or value == '':
         return value, []
@@ -595,7 +596,25 @@ def _anonymize_value(key, value, masterid, existing_rows, records):
                 fake_data = anonymize_date_hipaa(str(value))
                 fake_data_generator = 'HIPAA_Date_Handler'
             else:
-                fake_data_generator, fake_data = generate_fake_data(pii_type)
+                try:
+                    # Try to generate fake data for the specific type
+                    fake_data_generator, fake_data = generate_fake_data(pii_type)
+                except:
+                    # If the specific type isn't supported, fall back to detecting PII in the value
+                    entities = detect_pii_data(str(value))
+                    if entities:
+                        # Use the first detected entity type
+                        entity = entities[0]
+                        try:
+                            fake_data_generator, fake_data = generate_fake_data(entity['Type'])
+                        except:
+                            # If still failing, use a generic replacement
+                            fake_data = _generate_generic_fake_data(pii_type, str(value))
+                            fake_data_generator = 'Generic_Handler'
+                    else:
+                        # No PII detected, generate generic fake data based on type
+                        fake_data = _generate_generic_fake_data(pii_type, str(value))
+                        fake_data_generator = 'Generic_Handler'
                 
             new_records.append({
                 'uuid': masterid,
@@ -608,9 +627,86 @@ def _anonymize_value(key, value, masterid, existing_rows, records):
     return fake_data, new_records
 
 
+def _generate_generic_fake_data(pii_type, original_value):
+    """
+    Generate generic fake data when specific generators aren't available.
+    """
+    import random
+    import string
+    
+    generic_replacements = {
+        'DIAGNOSIS': [
+            'Chronic Fatigue Syndrome (G93.3)',
+            'Essential Hypertension (I10)',
+            'Type 2 Diabetes Mellitus (E11.9)',
+            'Major Depressive Disorder (F32.9)',
+            'Generalized Anxiety Disorder (F41.1)',
+            'Migraine without Aura (G43.0)',
+            'Gastroesophageal Reflux Disease (K21.9)',
+            'Allergic Rhinitis (J30.9)'
+        ],
+        'ORGANIZATION': [
+            'General Medical Center',
+            'Regional Health Clinic',
+            'Community Care Hospital',
+            'Wellness Medical Group',
+            'Metropolitan Health Services',
+            'Central Medical Associates',
+            'Premier Healthcare Center',
+            'Unity Health Network'
+        ],
+        'MEDICATION': [
+            'Acetaminophen 500mg',
+            'Ibuprofen 200mg',
+            'Omeprazole 20mg',
+            'Lisinopril 10mg',
+            'Metformin 500mg',
+            'Atorvastatin 20mg',
+            'Amlodipine 5mg',
+            'Sertraline 50mg'
+        ],
+        'PROCEDURE': [
+            'Physical Examination',
+            'Blood Test',
+            'X-Ray',
+            'MRI Scan',
+            'Ultrasound',
+            'ECG',
+            'Consultation',
+            'Follow-up Visit'
+        ],
+        'LAB_VALUE': [
+            'Normal Range',
+            '120 mg/dL',
+            '7.2%',
+            '98.6°F',
+            '120/80 mmHg',
+            'Negative',
+            'Within Limits',
+            'Stable'
+        ]
+    }
+    
+    # If we have specific replacements for this type, use them
+    if pii_type in generic_replacements:
+        return random.choice(generic_replacements[pii_type])
+    
+    # Otherwise, generate a generic anonymized string
+    # Preserve the general format/length of the original
+    if '(' in original_value and ')' in original_value:
+        # Looks like it has a code, preserve that format
+        base = ''.join(random.choices(string.ascii_uppercase, k=3))
+        code = ''.join(random.choices(string.digits, k=2))
+        return f"Anonymized {pii_type} ({base}{code})"
+    else:
+        # Just return a generic anonymized value
+        return f"[Anonymized {pii_type}]"
+
+
 def _anonymize_scalar(value, masterid, existing_rows, records):
     """
     Anonymize a scalar value by detecting PII.
+    Enhanced to handle failures gracefully.
     """
     if value is None or value == '' or isinstance(value, (int, float, bool)):
         return value, []
@@ -630,7 +726,13 @@ def _anonymize_scalar(value, masterid, existing_rows, records):
         if fake_data is None:
             fake_data = if_exists(records, entity['Type'], entity['originalData'])
             if fake_data is None:
-                fake_data_generator, fake_data = generate_fake_data(entity['Type'])
+                try:
+                    fake_data_generator, fake_data = generate_fake_data(entity['Type'])
+                except:
+                    # If generation fails, use a simple replacement
+                    fake_data = f"[REDACTED-{entity['Type']}]"
+                    fake_data_generator = 'Redaction_Handler'
+                    
                 new_records.append({
                     'uuid': masterid,
                     'piiType': entity['Type'],
