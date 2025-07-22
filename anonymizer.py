@@ -19,6 +19,9 @@ audit_logger = AuditLogger()
 
 session = db_utils.get_db_session()
 
+# DEBUG MODE - Set to False in production
+DEBUG_MODE = True
+
 
 def log_phi_access(masterid: str, action: str, data_type: str, user_context: Dict[str, Any] = None):
     """Log PHI access for HIPAA audit requirements"""
@@ -462,22 +465,35 @@ def anonymize_json_enhanced(identity, identityType, json_data, context=None):
     Transforms medical data into generic business/project data.
     """
     try:
+        if DEBUG_MODE:
+            print(f"[DEBUG] Starting enhanced anonymization for identity: {identity}")
+        
         # Parse JSON if string
         if isinstance(json_data, str):
             data = json.loads(json_data)
         else:
             data = json_data
             
+        if DEBUG_MODE:
+            print(f"[DEBUG] Input data keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
+            
         masterid = get_piimaster_uuid(identity, identityType)
+        if DEBUG_MODE:
+            print(f"[DEBUG] Master ID: {masterid}")
         
         # Log JSON anonymization
         log_phi_access(masterid, 'ANONYMIZE_JSON', 'json_data', context)
         
         # Get existing PII data for user
         rows = get_piientity_data(masterid)
+        if DEBUG_MODE:
+            print(f"[DEBUG] Existing rows count: {len(rows) if rows else 0}")
         
         # First, flatten the entire structure to capture all data
         flattened_data = _flatten_json(data)
+        if DEBUG_MODE:
+            print(f"[DEBUG] Flattened data items: {len(flattened_data)}")
+            print(f"[DEBUG] Sample flattened keys: {list(flattened_data.keys())[:5]}")
         
         # Create a mapping for the structure
         structure_map = _create_structure_map(data)
@@ -490,9 +506,19 @@ def anonymize_json_enhanced(identity, identityType, json_data, context=None):
             'fakeDataType': 'structure_map',
             'fakeData': _generate_fake_structure_id(masterid, json.dumps(data))
         }
+        if DEBUG_MODE:
+            print(f"[DEBUG] Created structure record with ID: {structure_record['fakeData']}")
         
         # Transform into generic business structure
         anonymized_data = _transform_to_business_structure(flattened_data, masterid, rows)
+        if DEBUG_MODE:
+            print(f"[DEBUG] Transform complete. Records created: {len(anonymized_data['records'])}")
+        
+        # Sample of records created
+        if DEBUG_MODE and anonymized_data['records']:
+            print(f"[DEBUG] Sample records:")
+            for record in anonymized_data['records'][:3]:
+                print(f"  - Type: {record['piiType']}, Original: {record['originalData'][:30]}..., Fake: {record['fakeData']}")
         
         # Store all mappings
         records = [structure_record] + anonymized_data['records']
@@ -506,8 +532,15 @@ def anonymize_json_enhanced(identity, identityType, json_data, context=None):
                 seen.add(key)
                 unique_records.append(record)
         
+        if DEBUG_MODE:
+            print(f"[DEBUG] Unique records to insert: {len(unique_records)}")
+        
         if unique_records:
+            if DEBUG_MODE:
+                print(f"[DEBUG] Calling bulk_insert_piientity...")
             bulk_insert_piientity(unique_records)
+            if DEBUG_MODE:
+                print(f"[DEBUG] Bulk insert complete")
             
         # Store anonymization record
         metadata = {
@@ -517,6 +550,9 @@ def anonymize_json_enhanced(identity, identityType, json_data, context=None):
             'data_type': 'json_enhanced',
             'structure_id': structure_record['fakeData']
         }
+        
+        if DEBUG_MODE:
+            print(f"[DEBUG] Storing anonymization record...")
         insert_piidata(masterid, json.dumps(data), json.dumps(anonymized_data['result']), 
                       'ANONYMIZE_JSON_ENHANCED', metadata=json.dumps(metadata))
         
@@ -528,6 +564,9 @@ def anonymize_json_enhanced(identity, identityType, json_data, context=None):
             'timestamp': datetime.datetime.utcnow().isoformat()
         })
         
+        if DEBUG_MODE:
+            print(f"[DEBUG] Anonymization complete. Result keys: {list(anonymized_data['result'].keys())}")
+        
         return {
             "statusCode": 200,
             "body": json.dumps({
@@ -537,11 +576,21 @@ def anonymize_json_enhanced(identity, identityType, json_data, context=None):
                     "hipaa_safe_harbor": True,
                     "gdpr_pseudonymized": True,
                     "structure_obfuscated": True
-                }
+                },
+                "debug": {
+                    "flattened_items": len(flattened_data),
+                    "records_created": len(anonymized_data['records']),
+                    "unique_records": len(unique_records),
+                    "masterid": masterid
+                } if DEBUG_MODE else {}
             })
         }
         
     except Exception as e:
+        import traceback
+        if DEBUG_MODE:
+            print(f"[DEBUG] Error in anonymize_json_enhanced: {str(e)}")
+            print(f"[DEBUG] Traceback: {traceback.format_exc()}")
         logger.error(e)
         audit_logger.log_error({
             'action': 'ANONYMIZE_JSON_ENHANCED',
