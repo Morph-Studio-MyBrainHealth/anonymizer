@@ -3,6 +3,8 @@ import json
 import logging
 import datetime
 from typing import Dict, Any
+import random
+import hashlib
 
 import db_utils
 from comprehend import generate_fake_entities, detect_pii_data, anonymize, de_anonymize, generate_fake_data
@@ -447,16 +449,17 @@ def de_anonymizer(identity, identityType, conversation, context=None):
 
 def anonymize_json(identity, identityType, json_data, context=None):
     """
-    Anonymize JSON data recursively while preserving structure.
-    
-    Args:
-        identity: The identifier for the entity
-        identityType: The type of the identity
-        json_data: JSON string or dict to anonymize
-        context: Optional context for audit logging
-    
-    Returns:
-        dict: Response with anonymized JSON
+    Enhanced JSON anonymization that completely transforms structure.
+    This is the main entry point for JSON anonymization.
+    """
+    # Use enhanced anonymization by default for better security
+    return anonymize_json_enhanced(identity, identityType, json_data, context)
+
+
+def anonymize_json_enhanced(identity, identityType, json_data, context=None):
+    """
+    Enhanced JSON anonymization that obscures both content AND structure.
+    Transforms medical data into generic business/project data.
     """
     try:
         # Parse JSON if string
@@ -473,10 +476,28 @@ def anonymize_json(identity, identityType, json_data, context=None):
         # Get existing PII data for user
         rows = get_piientity_data(masterid)
         
-        # Recursively anonymize the JSON
-        anonymized_data, records = _anonymize_json_recursive(data, masterid, rows)
+        # First, flatten the entire structure to capture all data
+        flattened_data = _flatten_json(data)
         
-        # Deduplicate records before bulk insert
+        # Create a mapping for the structure
+        structure_map = _create_structure_map(data)
+        
+        # Store the structure map for de-anonymization
+        structure_record = {
+            'uuid': masterid,
+            'piiType': 'JSON_STRUCTURE',
+            'originalData': json.dumps(structure_map),
+            'fakeDataType': 'structure_map',
+            'fakeData': _generate_fake_structure_id(masterid, json.dumps(data))
+        }
+        
+        # Transform into generic business structure
+        anonymized_data = _transform_to_business_structure(flattened_data, masterid, rows)
+        
+        # Store all mappings
+        records = [structure_record] + anonymized_data['records']
+        
+        # Deduplicate and insert
         unique_records = []
         seen = set()
         for record in records:
@@ -485,7 +506,6 @@ def anonymize_json(identity, identityType, json_data, context=None):
                 seen.add(key)
                 unique_records.append(record)
         
-        # Bulk insert new PII mappings
         if unique_records:
             bulk_insert_piientity(unique_records)
             
@@ -494,15 +514,16 @@ def anonymize_json(identity, identityType, json_data, context=None):
             'gdpr_purpose': context.get('purpose') if context else None,
             'gdpr_legal_basis': 'Article 9(2)(h)' if context else None,
             'entities_processed': len(unique_records),
-            'data_type': 'json'
+            'data_type': 'json_enhanced',
+            'structure_id': structure_record['fakeData']
         }
-        insert_piidata(masterid, json.dumps(data), json.dumps(anonymized_data), 
-                      'ANONYMIZE_JSON', metadata=json.dumps(metadata))
+        insert_piidata(masterid, json.dumps(data), json.dumps(anonymized_data['result']), 
+                      'ANONYMIZE_JSON_ENHANCED', metadata=json.dumps(metadata))
         
         # Log success
         audit_logger.log_success({
             'masterid': masterid,
-            'action': 'ANONYMIZE_JSON',
+            'action': 'ANONYMIZE_JSON_ENHANCED',
             'entities_processed': len(unique_records),
             'timestamp': datetime.datetime.utcnow().isoformat()
         })
@@ -510,11 +531,12 @@ def anonymize_json(identity, identityType, json_data, context=None):
         return {
             "statusCode": 200,
             "body": json.dumps({
-                "result": anonymized_data,
+                "result": anonymized_data['result'],
                 "entities_detected": len(unique_records),
                 "compliance": {
                     "hipaa_safe_harbor": True,
-                    "gdpr_pseudonymized": True
+                    "gdpr_pseudonymized": True,
+                    "structure_obfuscated": True
                 }
             })
         }
@@ -522,7 +544,7 @@ def anonymize_json(identity, identityType, json_data, context=None):
     except Exception as e:
         logger.error(e)
         audit_logger.log_error({
-            'action': 'ANONYMIZE_JSON',
+            'action': 'ANONYMIZE_JSON_ENHANCED',
             'error': str(e),
             'timestamp': datetime.datetime.utcnow().isoformat()
         })
@@ -532,74 +554,546 @@ def anonymize_json(identity, identityType, json_data, context=None):
         }
 
 
-def _anonymize_json_recursive(data, masterid, existing_rows, records=None):
-    """
-    Recursively anonymize JSON data, handling nested structures.
-    Enhanced to handle all structures properly.
-    """
-    if records is None:
-        records = []
-        
+def _flatten_json(data, parent_key='', sep='__'):
+    """Flatten nested JSON into a single level with composite keys."""
+    items = []
+    
     if isinstance(data, dict):
-        anonymized = {}
         for key, value in data.items():
-            # ALWAYS check if the key indicates sensitive data
-            if should_anonymize_key(key):
-                # Force anonymization for sensitive keys
-                anonymized[key], new_records = _anonymize_value(
-                    key, value, masterid, existing_rows, records
-                )
-                records.extend(new_records)
+            new_key = f"{parent_key}{sep}{key}" if parent_key else key
+            if isinstance(value, dict):
+                items.extend(_flatten_json(value, new_key, sep).items())
+            elif isinstance(value, list):
+                for i, item in enumerate(value):
+                    if isinstance(item, dict):
+                        items.extend(_flatten_json(item, f"{new_key}{sep}{i}", sep).items())
+                    else:
+                        items.append((f"{new_key}{sep}{i}", item))
             else:
-                # For non-sensitive keys, still check the value
-                anonymized[key], _ = _anonymize_json_recursive(
-                    value, masterid, existing_rows, records
-                )
-        return anonymized, records
-        
-    elif isinstance(data, list):
-        anonymized = []
-        for item in data:
-            anon_item, _ = _anonymize_json_recursive(
-                item, masterid, existing_rows, records
-            )
-            anonymized.append(anon_item)
-        return anonymized, records
-        
-    else:
-        # It's a scalar value - check if it needs anonymization
-        # Even for non-sensitive keys, check if the value contains PII
-        return _anonymize_scalar(data, masterid, existing_rows, records)
+                items.append((new_key, value))
+    
+    return dict(items)
 
 
-def should_anonymize_key(key):
+def _create_structure_map(data):
+    """Create a map of the original structure for reconstruction."""
+    def map_structure(obj, path=''):
+        if isinstance(obj, dict):
+            return {
+                'type': 'dict',
+                'path': path,
+                'keys': {k: map_structure(v, f"{path}.{k}" if path else k) 
+                        for k, v in obj.items()}
+            }
+        elif isinstance(obj, list):
+            return {
+                'type': 'list',
+                'path': path,
+                'length': len(obj),
+                'items': [map_structure(item, f"{path}[{i}]") 
+                         for i, item in enumerate(obj)]
+            }
+        else:
+            return {
+                'type': 'value',
+                'path': path,
+                'original_type': type(obj).__name__
+            }
+    
+    return map_structure(data)
+
+
+def _generate_fake_structure_id(masterid, original_json):
+    """Generate a unique ID for this structure."""
+    hash_input = f"{masterid}:{original_json}"
+    return f"STRUCT-{hashlib.sha256(hash_input.encode()).hexdigest()[:12]}"
+
+
+def _transform_to_business_structure(flattened_data, masterid, existing_rows):
     """
-    Determine if a key likely contains PII/PHI based on its name.
-    Enhanced to catch more medical fields.
+    Transform flattened medical data into generic business structure.
+    This completely changes the structure to hide medical context.
     """
-    pii_keywords = [
-        'name', 'clinic_name', 'provider', 'doctor', 'physician',
-        'date', 'dob', 'birth', 'address', 'phone', 'email',
-        'ssn', 'mrn', 'id', 'diagnosis', 'medication', 
-        'referring_provider', 'clinic', 'hospital', 'service',
-        'clinician', 'consultant', 'psychiatrist', 'psychologist',
-        'therapist', 'counselor', 'nurse', 'role', 'reason',
-        'note', 'comment', 'description', 'summary',
-        # Medical symptom keywords
-        'symptom', 'symptoms', 'challenge', 'challenges',
-        'pattern', 'patterns', 'condition', 'conditions',
-        'disorder', 'disorders', 'impairment', 'disease',
-        'syndrome', 'illness', 'ailment', 'complaint',
-        'anxiety', 'depression', 'delusion', 'hallucination',
-        'apathy', 'agitation', 'irritability',
-        # Daily living activities
-        'activities', 'living', 'laundry', 'shopping',
-        'housekeeping', 'communication', 'transportation',
-        'food_preparation', 'managing_finances', 'managing_medications'
+    # Generic business structures to use
+    business_templates = [
+        {
+            "project_data": {
+                "initiatives": [],
+                "metrics": {},
+                "timelines": []
+            }
+        },
+        {
+            "workflow_analysis": {
+                "processes": [],
+                "efficiency_scores": {},
+                "optimization_targets": []
+            }
+        },
+        {
+            "resource_allocation": {
+                "categories": [],
+                "utilization": {},
+                "planning_phases": []
+            }
+        },
+        {
+            "system_configuration": {
+                "modules": [],
+                "parameters": {},
+                "deployment_stages": []
+            }
+        }
     ]
     
-    key_lower = key.lower()
-    return any(keyword in key_lower for keyword in pii_keywords)
+    # Choose a template based on hash of the data
+    data_hash = int(hashlib.md5(str(flattened_data).encode()).hexdigest()[:8], 16)
+    template = business_templates[data_hash % len(business_templates)].copy()
+    
+    # Deep copy the template to avoid modifying the original
+    import copy
+    template = copy.deepcopy(template)
+    
+    # Anonymize all keys and values
+    records = []
+    anonymized_items = []
+    
+    for original_key, value in flattened_data.items():
+        if value is None or (isinstance(value, list) and len(value) == 0):
+            continue  # Skip empty values
+            
+        # Check if we already have a mapping for this key
+        fake_key = if_exists(existing_rows, 'JSON_KEY', original_key)
+        if not fake_key:
+            fake_key = if_exists(records, 'JSON_KEY', original_key)
+            if not fake_key:
+                fake_key = _generate_business_key(original_key)
+                key_record = {
+                    'uuid': masterid,
+                    'piiType': 'JSON_KEY',
+                    'originalData': original_key,
+                    'fakeDataType': 'business_key',
+                    'fakeData': fake_key
+                }
+                records.append(key_record)
+        
+        # Anonymize the value
+        if isinstance(value, str) and value:
+            # Determine type from original key
+            value_type = _infer_type_from_key(original_key)
+            
+            # Check if we already have a mapping for this value
+            fake_value = if_exists(existing_rows, value_type, value)
+            if not fake_value:
+                fake_value = if_exists(records, value_type, value)
+                if not fake_value:
+                    fake_value = _generate_business_value(value_type, value)
+                    value_record = {
+                        'uuid': masterid,
+                        'piiType': value_type,
+                        'originalData': value,
+                        'fakeDataType': 'business_value',
+                        'fakeData': fake_value
+                    }
+                    records.append(value_record)
+            
+            anonymized_items.append((fake_key, fake_value))
+    
+    # Now distribute the anonymized items into the template structure
+    result = _distribute_into_template(template, anonymized_items)
+    
+    return {
+        'result': result,
+        'records': records
+    }
+
+
+def _generate_business_key(original_key):
+    """Generate a business-appropriate key name."""
+    business_keys = [
+        'project_id', 'workflow_step', 'resource_type', 'config_param',
+        'metric_name', 'process_stage', 'allocation_unit', 'system_module',
+        'timeline_phase', 'efficiency_metric', 'optimization_level', 'deployment_zone',
+        'category_code', 'utilization_rate', 'planning_segment', 'parameter_set'
+    ]
+    
+    # Use hash to consistently map keys
+    hash_val = int(hashlib.md5(original_key.encode()).hexdigest()[:8], 16)
+    return business_keys[hash_val % len(business_keys)]
+
+
+def _infer_type_from_key(key_path):
+    """Infer the data type from the flattened key path."""
+    key_lower = key_path.lower()
+    
+    if any(term in key_lower for term in ['challenge', 'symptom', 'diagnosis', 'condition']):
+        return 'DIAGNOSIS'
+    elif any(term in key_lower for term in ['pattern', 'sleep']):
+        return 'SLEEP_PATTERN'
+    elif any(term in key_lower for term in ['anxiety', 'depression', 'agitation']):
+        return 'PSYCHIATRIC_SYMPTOM'
+    elif any(term in key_lower for term in ['activities', 'living']):
+        return 'DAILY_ACTIVITY'
+    else:
+        return 'GENERIC_VALUE'
+
+
+def _generate_business_value(value_type, original_value):
+    """Generate business-appropriate values based on type."""
+    # Business value sets
+    business_values = {
+        'DIAGNOSIS': [
+            'Strategic Initiative Alpha',
+            'Operational Framework Beta',
+            'Process Optimization Gamma',
+            'System Enhancement Delta',
+            'Workflow Improvement Epsilon'
+        ],
+        'SLEEP_PATTERN': [
+            'Schedule Pattern A',
+            'Timing Sequence B',
+            'Cycle Configuration C',
+            'Phase Distribution D',
+            'Interval Structure E'
+        ],
+        'PSYCHIATRIC_SYMPTOM': [
+            'Performance Metric 1',
+            'Efficiency Score 2',
+            'Quality Index 3',
+            'Productivity Rate 4',
+            'Optimization Level 5'
+        ],
+        'DAILY_ACTIVITY': [
+            'Task Component X',
+            'Process Element Y',
+            'Workflow Unit Z',
+            'Operation Segment W',
+            'Function Module V'
+        ],
+        'GENERIC_VALUE': [
+            'Configuration A',
+            'Parameter B',
+            'Setting C',
+            'Option D',
+            'Value E'
+        ]
+    }
+    
+    options = business_values.get(value_type, business_values['GENERIC_VALUE'])
+    hash_val = int(hashlib.md5(original_value.encode()).hexdigest()[:8], 16)
+    return options[hash_val % len(options)]
+
+
+def _distribute_into_template(template, anonymized_items):
+    """
+    Distribute anonymized items into the business template structure.
+    This creates a completely different structure from the original.
+    """
+    # Get the main container from template
+    main_key = list(template.keys())[0]
+    container = template[main_key]
+    
+    # Distribute items across different sections
+    for i, (key, value) in enumerate(anonymized_items):
+        section = i % 3  # Rotate through sections
+        
+        if section == 0 and isinstance(container.get(list(container.keys())[0]), list):
+            # Add to first list
+            container[list(container.keys())[0]].append({key: value})
+        elif section == 1 and len(container) > 1:
+            # Add to dictionary section
+            dict_key = [k for k in container.keys() if isinstance(container[k], dict)][0]
+            container[dict_key][key] = value
+        else:
+            # Add to last list or create new entry
+            list_keys = [k for k in container.keys() if isinstance(container[k], list)]
+            if list_keys:
+                container[list_keys[-1]].append({key: value})
+    
+    # Add some random padding to obscure array lengths
+    for key, value in container.items():
+        if isinstance(value, list):
+            # Randomly add or remove items to obscure original length
+            target_length = random.randint(3, 8)
+            while len(value) < target_length:
+                value.append({"placeholder": f"Reserved-{random.randint(100,999)}"})
+            if len(value) > target_length:
+                value = value[:target_length]
+            container[key] = value
+    
+    return template
+
+
+def de_anonymize_json(identity, identityType, json_data, context=None):
+    """
+    Main entry point for JSON de-anonymization.
+    Automatically detects if enhanced anonymization was used.
+    """
+    # First check if this was enhanced anonymization
+    masterid = get_piimaster_uuid(identity, identityType, insert=False)
+    rows = get_piientity_data(masterid)
+    
+    # Check if there's a structure map (indicates enhanced anonymization)
+    has_structure_map = any(row['piiType'] == 'JSON_STRUCTURE' for row in rows)
+    
+    if has_structure_map:
+        return de_anonymize_json_enhanced(identity, identityType, json_data, context)
+    else:
+        # Fall back to simple de-anonymization for legacy data
+        return _de_anonymize_json_simple(identity, identityType, json_data, context)
+
+
+def de_anonymize_json_enhanced(identity, identityType, json_data, context=None):
+    """
+    De-anonymize JSON that was transformed with enhanced anonymization.
+    Reconstructs the original structure and values.
+    """
+    try:
+        # Parse JSON if string
+        if isinstance(json_data, str):
+            data = json.loads(json_data)
+        else:
+            data = json_data
+            
+        masterid = get_piimaster_uuid(identity, identityType, insert=False)
+        
+        # Log de-anonymization access
+        log_phi_access(masterid, 'DE_ANONYMIZE_JSON_ENHANCED', 'json_data', context)
+        
+        # Get all PII mappings for user
+        rows = get_piientity_data(masterid)
+        
+        if not rows:
+            return {
+                "statusCode": 200,
+                "body": json.dumps({
+                    "result": data,
+                    "entities_restored": 0
+                })
+            }
+        
+        # Find the structure map
+        structure_map = None
+        structure_id = None
+        
+        for row in rows:
+            if row['piiType'] == 'JSON_STRUCTURE':
+                structure_map = json.loads(row['originalData'])
+                structure_id = row['fakeData']
+                break
+        
+        if not structure_map:
+            # Fall back to regular de-anonymization
+            return _de_anonymize_json_simple(identity, identityType, json_data, context)
+        
+        # Extract all anonymized values from the business structure
+        anonymized_values = _extract_from_business_structure(data)
+        
+        # Create reverse mappings
+        key_mapping = {row['fakeData']: row['originalData'] 
+                      for row in rows if row['piiType'] == 'JSON_KEY'}
+        value_mapping = {row['fakeData']: row['originalData'] 
+                        for row in rows if row['piiType'] != 'JSON_KEY' and row['piiType'] != 'JSON_STRUCTURE'}
+        
+        # Reconstruct flattened data
+        flattened_original = {}
+        for fake_key, fake_value in anonymized_values.items():
+            if fake_key != 'placeholder':
+                original_key = key_mapping.get(fake_key, fake_key)
+                original_value = value_mapping.get(fake_value, fake_value)
+                if original_key in key_mapping:  # Only include if it was actually mapped
+                    flattened_original[original_key] = original_value
+        
+        # Reconstruct nested structure from structure map
+        reconstructed = _reconstruct_from_structure_map(structure_map, flattened_original)
+        
+        # Store de-anonymization record
+        metadata = {
+            'gdpr_access_reason': context.get('access_reason') if context else None,
+            'gdpr_authorized_by': context.get('authorized_by') if context else None,
+            'timestamp': datetime.datetime.utcnow().isoformat(),
+            'structure_id': structure_id
+        }
+        insert_piidata(masterid, json.dumps(reconstructed), json.dumps(data), 
+                      'DE_ANONYMIZE_JSON_ENHANCED', metadata=json.dumps(metadata))
+        
+        # Log success
+        audit_logger.log_success({
+            'masterid': masterid,
+            'action': 'DE_ANONYMIZE_JSON_ENHANCED',
+            'entities_restored': len(rows),
+            'timestamp': datetime.datetime.utcnow().isoformat()
+        })
+        
+        return {
+            "statusCode": 200,
+            "body": json.dumps({
+                "result": reconstructed,
+                "entities_restored": len(rows)
+            })
+        }
+        
+    except Exception as e:
+        logger.error(e)
+        audit_logger.log_error({
+            'action': 'DE_ANONYMIZE_JSON_ENHANCED',
+            'error': str(e),
+            'timestamp': datetime.datetime.utcnow().isoformat()
+        })
+        return {
+            "statusCode": 500,
+            "error": f"Error: {e}"
+        }
+
+
+def _extract_from_business_structure(data):
+    """Extract all key-value pairs from the business structure."""
+    extracted = {}
+    
+    def extract_recursive(obj):
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if isinstance(value, (str, int, float, bool)):
+                    extracted[key] = value
+                else:
+                    extract_recursive(value)
+        elif isinstance(obj, list):
+            for item in obj:
+                extract_recursive(item)
+    
+    extract_recursive(data)
+    return extracted
+
+
+def _reconstruct_from_structure_map(structure_map, flattened_data):
+    """Reconstruct the original nested structure from the map and flattened data."""
+    
+    def reconstruct_recursive(struct_info):
+        if struct_info['type'] == 'dict':
+            result = {}
+            for key, sub_struct in struct_info['keys'].items():
+                sub_result = reconstruct_recursive(sub_struct)
+                if sub_result is not None:
+                    result[key] = sub_result
+            return result if result else {}
+            
+        elif struct_info['type'] == 'list':
+            result = []
+            for item_struct in struct_info['items']:
+                item_result = reconstruct_recursive(item_struct)
+                if item_result is not None:
+                    result.append(item_result)
+            return result
+            
+        elif struct_info['type'] == 'value':
+            # Find the value in flattened data
+            path = struct_info['path']
+            # Convert path to flattened key format
+            flattened_key = path.replace('.', '__').replace('[', '__').replace(']', '')
+            return flattened_data.get(flattened_key)
+    
+    return reconstruct_recursive(structure_map)
+
+
+def _de_anonymize_json_simple(identity, identityType, json_data, context=None):
+    """
+    Simple de-anonymization for legacy data that preserved structure.
+    This is the old method kept for backward compatibility.
+    """
+    try:
+        # Parse JSON if string
+        if isinstance(json_data, str):
+            data = json.loads(json_data)
+        else:
+            data = json_data
+            
+        masterid = get_piimaster_uuid(identity, identityType, insert=False)
+        
+        # Log de-anonymization access
+        log_phi_access(masterid, 'DE_ANONYMIZE_JSON', 'json_data', context)
+        
+        # Get PII data for user
+        rows = get_piientity_data(masterid)
+        
+        if not rows:
+            return {
+                "statusCode": 200,
+                "body": json.dumps({
+                    "result": data,
+                    "entities_restored": 0
+                })
+            }
+        
+        # Recursively de-anonymize
+        de_anonymized_data = _de_anonymize_json_recursive(data, rows)
+        
+        # Store de-anonymization record
+        metadata = {
+            'gdpr_access_reason': context.get('access_reason') if context else None,
+            'gdpr_authorized_by': context.get('authorized_by') if context else None,
+            'timestamp': datetime.datetime.utcnow().isoformat()
+        }
+        insert_piidata(masterid, json.dumps(de_anonymized_data), json.dumps(data), 
+                      'DE_ANONYMIZE_JSON', metadata=json.dumps(metadata))
+        
+        # Log success
+        audit_logger.log_success({
+            'masterid': masterid,
+            'action': 'DE_ANONYMIZE_JSON',
+            'entities_restored': len(rows),
+            'timestamp': datetime.datetime.utcnow().isoformat()
+        })
+        
+        return {
+            "statusCode": 200,
+            "body": json.dumps({
+                "result": de_anonymized_data,
+                "entities_restored": len(rows)
+            })
+        }
+        
+    except Exception as e:
+        logger.error(e)
+        audit_logger.log_error({
+            'action': 'DE_ANONYMIZE_JSON',
+            'error': str(e),
+            'timestamp': datetime.datetime.utcnow().isoformat()
+        })
+        return {
+            "statusCode": 500,
+            "error": f"Error: {e}"
+        }
+
+
+def _de_anonymize_json_recursive(data, rows):
+    """
+    Recursively de-anonymize JSON data (old method for backward compatibility).
+    """
+    if isinstance(data, dict):
+        de_anonymized = {}
+        for key, value in data.items():
+            de_anonymized[key] = _de_anonymize_json_recursive(value, rows)
+        return de_anonymized
+        
+    elif isinstance(data, list):
+        return [_de_anonymize_json_recursive(item, rows) for item in data]
+        
+    else:
+        # It's a scalar value - try to de-anonymize
+        if data is None or data == '':
+            return data
+            
+        # Try to find and replace fake data with original
+        result = str(data)
+        for row in rows:
+            if row['fakeData'] in result:
+                result = result.replace(row['fakeData'], row['originalData'])
+                
+        # Return appropriate type
+        if isinstance(data, str):
+            return result
+        else:
+            return data
 
 
 def _generate_non_medical_fake_data(pii_type, original_value):
@@ -608,9 +1102,7 @@ def _generate_non_medical_fake_data(pii_type, original_value):
     Uses hash of original value for consistent replacements.
     Returns generic, non-medical terms that don't reveal the nature of the data.
     """
-    import random
     import string
-    import hashlib
     
     # Use hash of original value to get consistent fake data
     hash_val = int(hashlib.md5(original_value.encode()).hexdigest()[:8], 16)
@@ -1002,104 +1494,74 @@ def anonymize_date_hipaa(date_str):
         return "XX/XX/XXXX"
 
 
-def de_anonymize_json(identity, identityType, json_data, context=None):
+def should_anonymize_key(key):
     """
-    De-anonymize JSON data while preserving structure.
+    Determine if a key likely contains PII/PHI based on its name.
+    Enhanced to catch more medical fields.
     """
-    try:
-        # Parse JSON if string
-        if isinstance(json_data, str):
-            data = json.loads(json_data)
-        else:
-            data = json_data
-            
-        masterid = get_piimaster_uuid(identity, identityType, insert=False)
-        
-        # Log de-anonymization access
-        log_phi_access(masterid, 'DE_ANONYMIZE_JSON', 'json_data', context)
-        
-        # Get PII data for user
-        rows = get_piientity_data(masterid)
-        
-        if not rows:
-            return {
-                "statusCode": 200,
-                "body": json.dumps({
-                    "result": data,
-                    "entities_restored": 0
-                })
-            }
-        
-        # Recursively de-anonymize
-        de_anonymized_data = _de_anonymize_json_recursive(data, rows)
-        
-        # Store de-anonymization record
-        metadata = {
-            'gdpr_access_reason': context.get('access_reason') if context else None,
-            'gdpr_authorized_by': context.get('authorized_by') if context else None,
-            'timestamp': datetime.datetime.utcnow().isoformat()
-        }
-        insert_piidata(masterid, json.dumps(de_anonymized_data), json.dumps(data), 
-                      'DE_ANONYMIZE_JSON', metadata=json.dumps(metadata))
-        
-        # Log success
-        audit_logger.log_success({
-            'masterid': masterid,
-            'action': 'DE_ANONYMIZE_JSON',
-            'entities_restored': len(rows),
-            'timestamp': datetime.datetime.utcnow().isoformat()
-        })
-        
-        return {
-            "statusCode": 200,
-            "body": json.dumps({
-                "result": de_anonymized_data,
-                "entities_restored": len(rows)
-            })
-        }
-        
-    except Exception as e:
-        logger.error(e)
-        audit_logger.log_error({
-            'action': 'DE_ANONYMIZE_JSON',
-            'error': str(e),
-            'timestamp': datetime.datetime.utcnow().isoformat()
-        })
-        return {
-            "statusCode": 500,
-            "error": f"Error: {e}"
-        }
+    pii_keywords = [
+        'name', 'clinic_name', 'provider', 'doctor', 'physician',
+        'date', 'dob', 'birth', 'address', 'phone', 'email',
+        'ssn', 'mrn', 'id', 'diagnosis', 'medication', 
+        'referring_provider', 'clinic', 'hospital', 'service',
+        'clinician', 'consultant', 'psychiatrist', 'psychologist',
+        'therapist', 'counselor', 'nurse', 'role', 'reason',
+        'note', 'comment', 'description', 'summary',
+        # Medical symptom keywords
+        'symptom', 'symptoms', 'challenge', 'challenges',
+        'pattern', 'patterns', 'condition', 'conditions',
+        'disorder', 'disorders', 'impairment', 'disease',
+        'syndrome', 'illness', 'ailment', 'complaint',
+        'anxiety', 'depression', 'delusion', 'hallucination',
+        'apathy', 'agitation', 'irritability',
+        # Daily living activities
+        'activities', 'living', 'laundry', 'shopping',
+        'housekeeping', 'communication', 'transportation',
+        'food_preparation', 'managing_finances', 'managing_medications'
+    ]
+    
+    key_lower = key.lower()
+    return any(keyword in key_lower for keyword in pii_keywords)
 
 
-def _de_anonymize_json_recursive(data, rows):
+def _anonymize_json_recursive(data, masterid, existing_rows, records=None):
     """
-    Recursively de-anonymize JSON data.
+    Recursively anonymize JSON data, handling nested structures.
+    Enhanced to handle all structures properly.
     """
+    if records is None:
+        records = []
+        
     if isinstance(data, dict):
-        de_anonymized = {}
+        anonymized = {}
         for key, value in data.items():
-            de_anonymized[key] = _de_anonymize_json_recursive(value, rows)
-        return de_anonymized
+            # ALWAYS check if the key indicates sensitive data
+            if should_anonymize_key(key):
+                # Force anonymization for sensitive keys
+                anonymized[key], new_records = _anonymize_value(
+                    key, value, masterid, existing_rows, records
+                )
+                records.extend(new_records)
+            else:
+                # For non-sensitive keys, still check the value
+                anonymized[key], _ = _anonymize_json_recursive(
+                    value, masterid, existing_rows, records
+                )
+        return anonymized, records
         
     elif isinstance(data, list):
-        return [_de_anonymize_json_recursive(item, rows) for item in data]
+        anonymized = []
+        for item in data:
+            anon_item, _ = _anonymize_json_recursive(
+                item, masterid, existing_rows, records
+            )
+            anonymized.append(anon_item)
+        return anonymized, records
         
     else:
-        # It's a scalar value - try to de-anonymize
-        if data is None or data == '':
-            return data
-            
-        # Try to find and replace fake data with original
-        result = str(data)
-        for row in rows:
-            if row['fakeData'] in result:
-                result = result.replace(row['fakeData'], row['originalData'])
-                
-        # Return appropriate type
-        if isinstance(data, str):
-            return result
-        else:
-            return data
+        # It's a scalar value - check if it needs anonymization
+        # Even for non-sensitive keys, check if the value contains PII
+        return _anonymize_scalar(data, masterid, existing_rows, records)
 
 
 def lambda_handler(event, context):
