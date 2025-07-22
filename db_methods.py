@@ -1,21 +1,18 @@
 """
 Database methods for PII/PHI anonymization system
-Enhanced with proper statistics tracking and transaction management
+Thread-safe version with proper session management
 """
 
 import uuid
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from sqlalchemy import text
 
 import db_utils
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
-# Get database session
-session = db_utils.get_db_session()
 
 
 def get_piimaster_uuid(identity, identityType, insert=True):
@@ -30,6 +27,7 @@ def get_piimaster_uuid(identity, identityType, insert=True):
     Returns:
         The master UUID string
     """
+    session = db_utils.get_db_session()
     try:
         # Check if identity already exists
         query = """
@@ -60,6 +58,8 @@ def get_piimaster_uuid(identity, identityType, insert=True):
         session.rollback()
         logger.error(f"Error in get_piimaster_uuid: {e}")
         raise
+    finally:
+        session.close()
 
 
 def get_piientity_data(masterid):
@@ -72,6 +72,7 @@ def get_piientity_data(masterid):
     Returns:
         List of dictionaries with PII mappings
     """
+    session = db_utils.get_db_session()
     try:
         query = """
             SELECT piiType, originalData, fakeDataType, fakeData
@@ -94,6 +95,8 @@ def get_piientity_data(masterid):
     except Exception as e:
         logger.error(f"Error in get_piientity_data: {e}")
         return []
+    finally:
+        session.close()
 
 
 def bulk_insert_piientity(records):
@@ -103,6 +106,7 @@ def bulk_insert_piientity(records):
     Args:
         records: List of dictionaries with PII entity data
     """
+    session = db_utils.get_db_session()
     try:
         for record in records:
             # Check if record already exists
@@ -130,6 +134,8 @@ def bulk_insert_piientity(records):
         session.rollback()
         logger.error(f"Error in bulk_insert_piientity: {e}")
         raise
+    finally:
+        session.close()
 
 
 def insert_piidata(masterid, original, anonymized, method, metadata=None):
@@ -143,6 +149,7 @@ def insert_piidata(masterid, original, anonymized, method, metadata=None):
         method: The method used (ANONYMIZE, DE-ANONYMIZE, etc.)
         metadata: Additional metadata as JSON string
     """
+    session = db_utils.get_db_session()
     try:
         insert_query = """
             INSERT INTO PIIData (uuid, originalData, anonymizedData, method, metadata, created_at)
@@ -156,6 +163,8 @@ def insert_piidata(masterid, original, anonymized, method, metadata=None):
         session.rollback()
         logger.error(f"Error in insert_piidata: {e}")
         raise
+    finally:
+        session.close()
 
 
 def get_anonymization_statistics(masterid=None):
@@ -163,6 +172,7 @@ def get_anonymization_statistics(masterid=None):
     Get anonymization statistics for a user or globally.
     Enhanced to properly count all entity types including enhanced anonymization.
     """
+    session = db_utils.get_db_session()
     try:
         # Standard PII types
         standard_pii_types = [
@@ -277,6 +287,8 @@ def get_anonymization_statistics(masterid=None):
             'entity_types': {},
             'error': str(e)
         }
+    finally:
+        session.close()
 
 
 def cleanup_old_records(days=90):
@@ -286,6 +298,7 @@ def cleanup_old_records(days=90):
     Args:
         days: Number of days to keep records
     """
+    session = db_utils.get_db_session()
     try:
         cutoff_date = datetime.utcnow() - timedelta(days=days)
         
@@ -316,6 +329,8 @@ def cleanup_old_records(days=90):
         session.rollback()
         logger.error(f"Error in cleanup_old_records: {e}")
         raise
+    finally:
+        session.close()
 
 
 def get_user_summary(identity, identityType):
@@ -329,6 +344,7 @@ def get_user_summary(identity, identityType):
     Returns:
         Dictionary with user activity summary
     """
+    session = db_utils.get_db_session()
     try:
         masterid = get_piimaster_uuid(identity, identityType, insert=False)
         
@@ -393,6 +409,8 @@ def get_user_summary(identity, identityType):
             'identity': identity,
             'identityType': identityType
         }
+    finally:
+        session.close()
 
 
 # Table creation statements (for reference)
