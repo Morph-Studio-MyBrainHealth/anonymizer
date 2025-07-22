@@ -11,7 +11,8 @@ import os
 from datetime import datetime
 
 # Import your anonymizer modules
-from anonymizer import anonymizer, de_anonymizer, anonymize_profile, de_anonymize_profile
+from anonymizer import (anonymizer, de_anonymizer, anonymize_profile, 
+                       de_anonymize_profile, anonymize_json, de_anonymize_json)
 from comprehend import detect_pii_data
 from db_methods import get_anonymization_statistics
 
@@ -108,6 +109,9 @@ HTML_TEMPLATE = '''
             padding: 5px 10px;
             margin: 2px;
         }
+        .json-btn {
+            background: #FF5722;
+        }
         .error {
             color: #d32f2f;
             background: #ffebee;
@@ -135,6 +139,14 @@ HTML_TEMPLATE = '''
             margin: 2px;
             font-size: 11px;
         }
+        pre {
+            background: #f5f5f5;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
     </style>
 </head>
 <body>
@@ -146,10 +158,11 @@ HTML_TEMPLATE = '''
             <div id="original-messages" class="chat-messages"></div>
             
             <h3>Input Medical Data</h3>
-            <textarea id="chat-input" placeholder="Enter patient data, clinical notes, or conversations..."></textarea>
+            <textarea id="chat-input" placeholder="Enter patient data, clinical notes, conversations, or JSON..."></textarea>
             
             <div>
-                <button onclick="anonymizeText()">Anonymize</button>
+                <button onclick="anonymizeText()">Anonymize Text</button>
+                <button onclick="anonymizeJSON()">Anonymize JSON</button>
                 <button onclick="detectEntities()">Detect Entities Only</button>
                 <button onclick="clearChat()">Clear</button>
             </div>
@@ -162,7 +175,8 @@ HTML_TEMPLATE = '''
             <div id="anonymized-messages" class="chat-messages"></div>
             
             <h3>Actions</h3>
-            <button onclick="deAnonymizeLastMessage()">De-Anonymize Last Message</button>
+            <button onclick="deAnonymizeLastMessage()">De-Anonymize Last</button>
+            <button onclick="deAnonymizeLastJSON()">De-Anonymize JSON</button>
             <button onclick="showStats()">Show Statistics</button>
             
             <div id="entity-display"></div>
@@ -177,10 +191,13 @@ HTML_TEMPLATE = '''
         <button class="example-btn" onclick="loadExample('devices')">Device IDs</button>
         <button class="example-btn" onclick="loadExample('conversation')">Patient Conversation</button>
         <button class="example-btn" onclick="loadExample('profile')">Patient Profile</button>
+        <button class="example-btn json-btn" onclick="loadExample('json_example')">JSON Example</button>
+        <button class="example-btn json-btn" onclick="loadExample('json_nested')">Nested JSON</button>
     </div>
     
     <script>
         let lastAnonymizedText = '';
+        let lastWasJSON = false;
         
         async function anonymizeText() {
             const input = document.getElementById('chat-input').value;
@@ -206,9 +223,58 @@ HTML_TEMPLATE = '''
                 // Display anonymized
                 addMessage('anonymized-messages', data.anonymized, 'anonymized');
                 lastAnonymizedText = data.anonymized;
+                lastWasJSON = false;
                 
                 // Display entities
                 displayEntities(data.entities);
+                
+                // Update stats
+                updateStats(data.stats);
+                
+                // Clear input
+                document.getElementById('chat-input').value = '';
+                
+            } catch (error) {
+                showError('Error: ' + error.message);
+            }
+        }
+        
+        async function anonymizeJSON() {
+            const input = document.getElementById('chat-input').value;
+            if (!input.trim()) return;
+            
+            try {
+                // Try to parse as JSON
+                let jsonData;
+                try {
+                    jsonData = JSON.parse(input);
+                } catch (e) {
+                    showError('Invalid JSON format. Please check your input.');
+                    return;
+                }
+                
+                const response = await fetch('/anonymize_json', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({json_data: jsonData})
+                });
+                
+                const data = await response.json();
+                
+                if (data.error) {
+                    showError(data.error);
+                    return;
+                }
+                
+                // Display original
+                const originalFormatted = JSON.stringify(jsonData, null, 2);
+                addMessage('original-messages', '<pre>' + originalFormatted + '</pre>', 'original');
+                
+                // Display anonymized
+                const anonymizedFormatted = JSON.stringify(data.anonymized, null, 2);
+                addMessage('anonymized-messages', '<pre>' + anonymizedFormatted + '</pre>', 'anonymized');
+                lastAnonymizedText = data.anonymized;
+                lastWasJSON = true;
                 
                 // Update stats
                 updateStats(data.stats);
@@ -246,6 +312,11 @@ HTML_TEMPLATE = '''
                 return;
             }
             
+            if (lastWasJSON) {
+                deAnonymizeLastJSON();
+                return;
+            }
+            
             try {
                 const response = await fetch('/deanonymize', {
                     method: 'POST',
@@ -262,6 +333,36 @@ HTML_TEMPLATE = '''
                 
                 addMessage('anonymized-messages', 
                     '<strong>De-Anonymized:</strong><br>' + data.deanonymized, 
+                    'original');
+                
+            } catch (error) {
+                showError('Error: ' + error.message);
+            }
+        }
+        
+        async function deAnonymizeLastJSON() {
+            if (!lastAnonymizedText || !lastWasJSON) {
+                showError('No anonymized JSON to de-anonymize');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/deanonymize_json', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({json_data: lastAnonymizedText})
+                });
+                
+                const data = await response.json();
+                
+                if (data.error) {
+                    showError(data.error);
+                    return;
+                }
+                
+                const deanonymizedFormatted = JSON.stringify(data.deanonymized, null, 2);
+                addMessage('anonymized-messages', 
+                    '<strong>De-Anonymized JSON:</strong><br><pre>' + deanonymizedFormatted + '</pre>', 
                     'original');
                 
             } catch (error) {
@@ -343,6 +444,7 @@ HTML_TEMPLATE = '''
             document.getElementById('entity-display').innerHTML = '';
             document.getElementById('stats').innerHTML = '';
             lastAnonymizedText = '';
+            lastWasJSON = false;
         }
         
         function showError(message) {
@@ -390,7 +492,68 @@ Phone: 555-987-6543
 Address: 123 Main St, Boston, MA 02101
 Insurance ID: BCB123456789
 Diagnosis: Hypertension, Type 2 Diabetes
-Medications: Metoprolol 50mg daily, Metformin 500mg BID`
+Medications: Metoprolol 50mg daily, Metformin 500mg BID`,
+                
+                json_example: `{
+  "patient": {
+    "name": "Sarah Johnson",
+    "dob": "15/03/1975",
+    "mrn": "MRN-789456"
+  },
+  "diagnosis": "Mild Cognitive Impairment (F06.7)",
+  "referral_info": {
+    "clinic_name": "Brain Health Clinic",
+    "referral_reason": "memory concerns",
+    "referring_provider": "Dr. Michael Chen",
+    "referral_date": "19/Nov/2024"
+  },
+  "assessment_info": {
+    "date": "19/Nov/2024",
+    "provider": "Dr. Emily Watson",
+    "next_appointment": "15/Jan/2025"
+  }
+}`,
+                
+                json_nested: `{
+  "patient_record": {
+    "demographics": {
+      "name": "Robert Williams",
+      "dob": "22/08/1955",
+      "address": "789 Oak Avenue, Chicago, IL 60601",
+      "phone": "312-555-9876",
+      "email": "rwilliams@email.com"
+    },
+    "medical_info": {
+      "mrn": "CHI-456789",
+      "primary_diagnosis": "Alzheimer's Disease (F00.1)",
+      "secondary_diagnoses": [
+        "Hypertension (I10)",
+        "Type 2 Diabetes (E11.9)"
+      ],
+      "current_medications": [
+        {
+          "name": "Donepezil",
+          "dose": "10mg",
+          "frequency": "daily",
+          "prescriber": "Dr. Susan Martinez"
+        },
+        {
+          "name": "Memantine",
+          "dose": "20mg",
+          "frequency": "daily",
+          "prescriber": "Dr. Susan Martinez"
+        }
+      ]
+    },
+    "care_team": {
+      "primary_physician": "Dr. Susan Martinez",
+      "neurologist": "Dr. James Thompson",
+      "clinic": "Chicago Memory Care Center",
+      "last_visit": "10/Dec/2024",
+      "next_appointment": "10/Mar/2025"
+    }
+  }
+}`
             };
             
             document.getElementById('chat-input').value = examples[type] || '';
@@ -468,6 +631,82 @@ def deanonymize_endpoint():
             session['user_id'],
             'SESSION_ID',
             text,
+            context
+        )
+        
+        if result['statusCode'] != 200:
+            return jsonify({'error': result.get('error', 'Unknown error')}), 500
+        
+        body = json.loads(result['body'])
+        
+        return jsonify({
+            'deanonymized': body['result'],
+            'entities_restored': body.get('entities_restored', 0)
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/anonymize_json', methods=['POST'])
+def anonymize_json_endpoint():
+    try:
+        data = request.get_json()
+        json_data = data.get('json_data', {})
+        
+        # Use a session ID as identity
+        if 'user_id' not in session:
+            session['user_id'] = str(uuid.uuid4())
+        
+        # Call JSON anonymizer
+        context = {
+            'purpose': 'testing',
+            'user_id': 'test_user',
+            'timestamp': datetime.utcnow().isoformat()
+        }
+        
+        result = anonymize_json(
+            session['user_id'],
+            'SESSION_ID',
+            json_data,
+            context
+        )
+        
+        if result['statusCode'] != 200:
+            return jsonify({'error': result.get('error', 'Unknown error')}), 500
+        
+        body = json.loads(result['body'])
+        
+        return jsonify({
+            'anonymized': body['result'],
+            'entities_detected': body.get('entities_detected', 0),
+            'stats': {
+                'entities_detected': body.get('entities_detected', 0),
+                'hipaa_compliant': body.get('compliance', {}).get('hipaa_safe_harbor', False),
+                'gdpr_compliant': body.get('compliance', {}).get('gdpr_pseudonymized', False)
+            }
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/deanonymize_json', methods=['POST'])
+def deanonymize_json_endpoint():
+    try:
+        data = request.get_json()
+        json_data = data.get('json_data', {})
+        
+        if 'user_id' not in session:
+            return jsonify({'error': 'No session found'}), 400
+        
+        context = {
+            'access_reason': 'testing',
+            'authorized_by': 'test_user'
+        }
+        
+        result = de_anonymize_json(
+            session['user_id'],
+            'SESSION_ID',
+            json_data,
             context
         )
         
