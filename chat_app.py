@@ -244,12 +244,48 @@ HTML_TEMPLATE = '''
             if (!input.trim()) return;
             
             try {
-                // Try to parse as JSON
+                // Try to parse as JSON, with better error handling
                 let jsonData;
                 try {
-                    jsonData = JSON.parse(input);
+                    // First, try to fix common JSON issues
+                    let fixedInput = input.trim();
+                    
+                    // Check if JSON is incomplete (common copy-paste issue)
+                    // Count opening and closing braces/brackets
+                    const openBraces = (fixedInput.match(/{/g) || []).length;
+                    const closeBraces = (fixedInput.match(/}/g) || []).length;
+                    const openBrackets = (fixedInput.match(/\[/g) || []).length;
+                    const closeBrackets = (fixedInput.match(/\]/g) || []).length;
+                    
+                    // Add missing closing braces/brackets
+                    if (openBraces > closeBraces) {
+                        fixedInput += '}'.repeat(openBraces - closeBraces);
+                    }
+                    if (openBrackets > closeBrackets) {
+                        fixedInput += ']'.repeat(openBrackets - closeBrackets);
+                    }
+                    
+                    // If the JSON ends with a comma or incomplete value, try to fix it
+                    if (fixedInput.endsWith(',"') || fixedInput.endsWith(':"')) {
+                        fixedInput = fixedInput.slice(0, -1) + '}';
+                    } else if (fixedInput.endsWith('"')) {
+                        // Check if this is an incomplete value
+                        const lastColon = fixedInput.lastIndexOf('":');
+                        if (lastColon > fixedInput.lastIndexOf('}')) {
+                            // This looks like an incomplete value
+                            fixedInput += '"}';
+                        }
+                    }
+                    
+                    jsonData = JSON.parse(fixedInput);
+                    
+                    // If we had to fix the JSON, show a warning
+                    if (fixedInput !== input.trim()) {
+                        showWarning('JSON was incomplete. Auto-completed for processing.');
+                    }
+                    
                 } catch (e) {
-                    showError('Invalid JSON format. Please check your input.');
+                    showError('Invalid JSON format: ' + e.message + '\\n\\nPlease check your JSON syntax.');
                     return;
                 }
                 
@@ -279,12 +315,22 @@ HTML_TEMPLATE = '''
                 // Update stats
                 updateStats(data.stats);
                 
+                // Display any entities detected (for debugging)
+                if (data.entities_detected === 0) {
+                    showWarning('No entities were detected for anonymization. Check if the anonymizer supports the data types in your JSON.');
+                }
+                
                 // Clear input
                 document.getElementById('chat-input').value = '';
                 
             } catch (error) {
                 showError('Error: ' + error.message);
             }
+        }
+        
+        function showWarning(message) {
+            const display = document.getElementById('entity-display');
+            display.innerHTML = `<div class="entities" style="background: #fff3e0; border-left-color: #FF9800;">${message}</div>`;
         }
         
         async function detectEntities() {
