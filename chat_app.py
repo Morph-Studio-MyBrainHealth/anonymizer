@@ -9,6 +9,7 @@ import json
 import uuid
 import os
 from datetime import datetime
+from collections import OrderedDict
 
 # Import your anonymizer modules
 from anonymizer import (anonymizer, de_anonymizer, anonymize_profile, 
@@ -199,6 +200,22 @@ HTML_TEMPLATE = '''
         let lastAnonymizedText = '';
         let lastWasJSON = false;
         
+        // Custom JSON parser that preserves order
+        function parseJSON(jsonString) {
+            try {
+                // Basic JSON parse - in production you'd want a proper order-preserving parser
+                return JSON.parse(jsonString);
+            } catch (e) {
+                throw e;
+            }
+        }
+        
+        // Custom JSON stringifier that preserves order
+        function stringifyJSON(obj, indent = 2) {
+            // This maintains the order as much as possible
+            return JSON.stringify(obj, null, indent);
+        }
+        
         async function anonymizeText() {
             const input = document.getElementById('chat-input').value;
             if (!input.trim()) return;
@@ -277,7 +294,7 @@ HTML_TEMPLATE = '''
                         }
                     }
                     
-                    jsonData = JSON.parse(fixedInput);
+                    jsonData = parseJSON(fixedInput);
                     
                     // If we had to fix the JSON, show a warning
                     if (fixedInput !== input.trim()) {
@@ -302,12 +319,12 @@ HTML_TEMPLATE = '''
                     return;
                 }
                 
-                // Display original
-                const originalFormatted = JSON.stringify(jsonData, null, 2);
+                // Display original with preserved formatting
+                const originalFormatted = stringifyJSON(jsonData);
                 addMessage('original-messages', '<pre>' + originalFormatted + '</pre>', 'original');
                 
-                // Display anonymized
-                const anonymizedFormatted = JSON.stringify(data.anonymized, null, 2);
+                // Display anonymized with preserved formatting
+                const anonymizedFormatted = stringifyJSON(data.anonymized);
                 addMessage('anonymized-messages', '<pre>' + anonymizedFormatted + '</pre>', 'anonymized');
                 lastAnonymizedText = data.anonymized;
                 lastWasJSON = true;
@@ -315,9 +332,9 @@ HTML_TEMPLATE = '''
                 // Update stats
                 updateStats(data.stats);
                 
-                // Display any entities detected (for debugging)
+                // Display any entities detected
                 if (data.entities_detected === 0) {
-                    showWarning('No entities were detected for anonymization. Check if the anonymizer supports the data types in your JSON.');
+                    showWarning('No entities were detected for anonymization. The anonymizer may not have recognized the medical content.');
                 } else {
                     showSuccess(`Successfully anonymized ${data.entities_detected} entities.`);
                 }
@@ -413,10 +430,16 @@ HTML_TEMPLATE = '''
                     return;
                 }
                 
-                const deanonymizedFormatted = JSON.stringify(data.deanonymized, null, 2);
+                const deanonymizedFormatted = stringifyJSON(data.deanonymized);
                 addMessage('anonymized-messages', 
                     '<strong>De-Anonymized JSON:</strong><br><pre>' + deanonymizedFormatted + '</pre>', 
                     'original');
+                
+                if (data.entities_restored > 0) {
+                    showSuccess(`Successfully restored ${data.entities_restored} entities.`);
+                } else {
+                    showWarning('No entities were restored. This may indicate the data was not properly anonymized.');
+                }
                 
             } catch (error) {
                 showError('Error: ' + error.message);
@@ -466,6 +489,7 @@ HTML_TEMPLATE = '''
                 Entities Detected: ${stats.entities_detected}<br>
                 Compliance: HIPAA ${stats.hipaa_compliant ? '✓' : '✗'}, 
                 GDPR ${stats.gdpr_compliant ? '✓' : '✗'}
+                ${stats.structure_preserved ? '<br>Structure Preserved: ✓' : ''}
             `;
         }
         
@@ -752,18 +776,27 @@ def anonymize_json_endpoint():
         if result['statusCode'] != 200:
             return jsonify({'error': result.get('error', 'Unknown error')}), 500
         
-        body = json.loads(result['body'])
+        # Parse the body preserving order
+        body = json.loads(result['body'], object_pairs_hook=OrderedDict)
         
-        return jsonify({
+        # Return response preserving order
+        response = {
             'anonymized': body['result'],
             'entities_detected': body.get('entities_detected', 0),
             'stats': {
                 'entities_detected': body.get('entities_detected', 0),
                 'hipaa_compliant': body.get('compliance', {}).get('hipaa_safe_harbor', False),
                 'gdpr_compliant': body.get('compliance', {}).get('gdpr_pseudonymized', False),
-                'structure_obfuscated': body.get('compliance', {}).get('structure_obfuscated', False)
+                'structure_preserved': body.get('compliance', {}).get('structure_preserved', False)
             }
-        })
+        }
+        
+        # Use Flask's jsonify with custom JSON encoder to preserve order
+        return app.response_class(
+            response=json.dumps(response, sort_keys=False),
+            status=200,
+            mimetype='application/json'
+        )
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -792,12 +825,21 @@ def deanonymize_json_endpoint():
         if result['statusCode'] != 200:
             return jsonify({'error': result.get('error', 'Unknown error')}), 500
         
-        body = json.loads(result['body'])
+        # Parse the body preserving order
+        body = json.loads(result['body'], object_pairs_hook=OrderedDict)
         
-        return jsonify({
+        # Return response preserving order
+        response = {
             'deanonymized': body['result'],
             'entities_restored': body.get('entities_restored', 0)
-        })
+        }
+        
+        # Use Flask's jsonify with custom JSON encoder to preserve order
+        return app.response_class(
+            response=json.dumps(response, sort_keys=False),
+            status=200,
+            mimetype='application/json'
+        )
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
