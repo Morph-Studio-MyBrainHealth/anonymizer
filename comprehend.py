@@ -71,6 +71,27 @@ def detect_local_pii(text: str) -> List[Dict[str, Any]]:
     """
     entities = []
     
+    # Name patterns - Enhanced to catch more name formats
+    name_patterns = [
+        # Name: pattern at start of line
+        r'Name:\s*([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)',
+        # Patient: pattern
+        r'Patient:\s*([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)',
+        # General name pattern (First Last)
+        r'\b([A-Z][a-z]+\s+[A-Z][a-z]+)(?=\s*(?:DOB|Phone|Address|,|\n|$))',
+    ]
+    
+    for pattern in name_patterns:
+        for match in re.finditer(pattern, text):
+            name = match.group(1)
+            entities.append({
+                'Type': 'NAME',
+                'originalData': name,
+                'BeginOffset': match.start(1),
+                'EndOffset': match.end(1),
+                'Score': 0.95
+            })
+    
     # Email pattern
     email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
     for match in re.finditer(email_pattern, text):
@@ -109,7 +130,7 @@ def detect_local_pii(text: str) -> List[Dict[str, Any]]:
             'Score': 0.98
             })
     
-    # Date patterns
+    # Date patterns - Enhanced
     date_patterns = [
         r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b',  # MM/DD/YYYY or MM-DD-YYYY
         r'\b\d{2,4}[/-]\d{1,2}[/-]\d{1,2}\b',  # YYYY/MM/DD
@@ -151,6 +172,17 @@ def detect_local_pii(text: str) -> List[Dict[str, Any]]:
                     'Score': 0.85
                 })
     
+    # Address pattern - captures full addresses
+    address_pattern = r'\b\d+\s+[A-Za-z\s]+(?:St|Street|Ave|Avenue|Rd|Road|Dr|Drive|Ln|Lane|Blvd|Boulevard|Way|Court|Ct|Plaza|Place|Pl)\.?\s*,?\s*[A-Za-z\s]+,?\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?'
+    for match in re.finditer(address_pattern, text):
+        entities.append({
+            'Type': 'ADDRESS',
+            'originalData': match.group(),
+            'BeginOffset': match.start(),
+            'EndOffset': match.end(),
+            'Score': 0.9
+        })
+    
     return entities
 
 
@@ -160,25 +192,26 @@ def detect_medical_entities(text: str) -> List[Dict[str, Any]]:
     """
     entities = []
     
-    # ICD codes (like F06.7, E11.9, I10)
-    icd_pattern = r'\b[A-TV-Z][0-9][0-9AB]\.?[0-9]{0,4}\b'
-    for match in re.finditer(icd_pattern, text):
-        # Check context to confirm it's likely a diagnosis code
-        context_before = text[max(0, match.start()-30):match.start()].lower()
-        context_after = text[match.end():min(len(text), match.end()+30)].lower()
-        
-        if any(word in context_before + context_after for word in ['diagnosis', 'icd', 'code', 'condition']):
-            score = 0.95
-        else:
-            score = 0.8
-            
-        entities.append({
-            'Type': 'DIAGNOSIS',
-            'originalData': match.group(),
-            'BeginOffset': match.start(),
-            'EndOffset': match.end(),
-            'Score': score
-        })
+    # Diagnosis patterns - Enhanced to catch common conditions
+    diagnosis_patterns = [
+        # After "Diagnosis:"
+        r'Diagnosis:\s*([^\n]+)',
+        # Common conditions
+        r'\b(Hypertension|Type \d Diabetes|Diabetes|Alzheimer\'s|Dementia|Depression|Anxiety|COPD|CHF|CAD|MI|CVA|TIA)\b',
+        # ICD codes
+        r'\b[A-TV-Z][0-9][0-9AB]\.?[0-9]{0,4}\b'
+    ]
+    
+    for pattern in diagnosis_patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            diagnosis_text = match.group(1) if match.lastindex else match.group()
+            entities.append({
+                'Type': 'DIAGNOSIS',
+                'originalData': diagnosis_text,
+                'BeginOffset': match.start() if not match.lastindex else match.start(1),
+                'EndOffset': match.end() if not match.lastindex else match.end(1),
+                'Score': 0.95
+            })
     
     # MRN patterns
     mrn_patterns = [
@@ -196,16 +229,39 @@ def detect_medical_entities(text: str) -> List[Dict[str, Any]]:
                 'Score': 0.95
             })
     
-    # Medication patterns (drug name + dosage)
-    med_pattern = r'\b[A-Z][a-z]+(?:in|ol|ide|ate|ine|one)?\s+\d+\s*(?:mg|mcg|g|ml|mL|units?|IU)\b'
-    for match in re.finditer(med_pattern, text):
-        entities.append({
-            'Type': 'MEDICATION',
-            'originalData': match.group(),
-            'BeginOffset': match.start(),
-            'EndOffset': match.end(),
-            'Score': 0.85
-        })
+    # Medication patterns - Enhanced
+    med_patterns = [
+        # Medications: pattern
+        r'Medications:\s*([^\n]+)',
+        # Drug name + dosage
+        r'\b([A-Z][a-z]+(?:in|ol|ide|ate|ine|one|pril|artan|statin)?\s+\d+\s*(?:mg|mcg|g|ml|mL|units?|IU))',
+        # Common medications by name
+        r'\b(Metformin|Lisinopril|Metoprolol|Atorvastatin|Simvastatin|Amlodipine|Losartan|Gabapentin|Insulin|Aspirin)\b'
+    ]
+    
+    for pattern in med_patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            med_text = match.group(1) if match.lastindex else match.group()
+            # Split medication list if it contains multiple meds
+            if ',' in med_text:
+                for med in med_text.split(','):
+                    med = med.strip()
+                    if med:
+                        entities.append({
+                            'Type': 'MEDICATION',
+                            'originalData': med,
+                            'BeginOffset': text.find(med),
+                            'EndOffset': text.find(med) + len(med),
+                            'Score': 0.85
+                        })
+            else:
+                entities.append({
+                    'Type': 'MEDICATION',
+                    'originalData': med_text,
+                    'BeginOffset': match.start() if not match.lastindex else match.start(1),
+                    'EndOffset': match.end() if not match.lastindex else match.end(1),
+                    'Score': 0.85
+                })
     
     # Lab values with units
     lab_patterns = [
@@ -245,19 +301,33 @@ def detect_medical_entities(text: str) -> List[Dict[str, Any]]:
             'Score': 0.95
         })
     
-    # Insurance ID patterns
-    insurance_pattern = r'\b[A-Z]{1,3}\d{6,12}\b'
-    for match in re.finditer(insurance_pattern, text):
-        # Check context
-        context = text[max(0, match.start()-20):min(len(text), match.end()+20)].lower()
-        if any(word in context for word in ['insurance', 'member', 'policy', 'id']):
-            entities.append({
-                'Type': 'INSURANCE_ID',
-                'originalData': match.group(),
-                'BeginOffset': match.start(),
-                'EndOffset': match.end(),
-                'Score': 0.85
-            })
+    # Insurance ID patterns - Enhanced
+    insurance_patterns = [
+        r'Insurance ID:\s*([A-Z0-9]+)',
+        r'\b[A-Z]{1,3}\d{6,12}\b'
+    ]
+    for pattern in insurance_patterns:
+        for match in re.finditer(pattern, text):
+            # For the first pattern, use group 1
+            if match.lastindex:
+                entities.append({
+                    'Type': 'INSURANCE_ID',
+                    'originalData': match.group(1),
+                    'BeginOffset': match.start(1),
+                    'EndOffset': match.end(1),
+                    'Score': 0.95
+                })
+            else:
+                # Check context for the second pattern
+                context = text[max(0, match.start()-20):min(len(text), match.end()+20)].lower()
+                if any(word in context for word in ['insurance', 'member', 'policy', 'id']):
+                    entities.append({
+                        'Type': 'INSURANCE_ID',
+                        'originalData': match.group(),
+                        'BeginOffset': match.start(),
+                        'EndOffset': match.end(),
+                        'Score': 0.85
+                    })
     
     # Clinical trial identifiers
     trial_pattern = r'\bNCT\d{8}\b'
@@ -269,6 +339,23 @@ def detect_medical_entities(text: str) -> List[Dict[str, Any]]:
             'EndOffset': match.end(),
             'Score': 0.95
         })
+    
+    # Lumbar puncture mentions
+    lumbar_patterns = [
+        r'lumbar puncture',
+        r'spinal tap',
+        r'LP procedure',
+        r'cerebrospinal fluid'
+    ]
+    for pattern in lumbar_patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            entities.append({
+                'Type': 'MEDICAL_PROCEDURE',
+                'originalData': match.group(),
+                'BeginOffset': match.start(),
+                'EndOffset': match.end(),
+                'Score': 0.9
+            })
     
     return entities
 
@@ -685,6 +772,9 @@ def generate_fake_entities(masterid: str, entities: List[Dict], existing_records
                 fake_data = generate_non_medical_replacement(entity['Type'], entity['originalData'])
             else:
                 generator_name, fake_data = generate_fake_data(entity['Type'])
+            
+            # Store the fake data with the entity for later use
+            entity['fakeData'] = fake_data
             
             new_records.append({
                 'uuid': masterid,
