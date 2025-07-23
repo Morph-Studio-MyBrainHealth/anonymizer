@@ -1024,6 +1024,10 @@ def should_anonymize_key(key):
     
     key_lower = key.lower()
     
+    # Special handling for "name" fields - always check unless it's explicitly a provider
+    if 'name' in key_lower and not any(provider in key_lower for provider in ['provider', 'doctor', 'physician', 'clinician', 'therapist']):
+        return True
+    
     # Exclude provider/doctor names from anonymization
     if any(provider in key_lower for provider in ['provider', 'doctor', 'physician', 'clinician', 'therapist']):
         return False
