@@ -1,7 +1,7 @@
 """
 Enhanced PII/PHI Detection and Anonymization Module
-Supports both standard PII and medical-specific data types
-Modified to use non-medical replacements for medical entities
+Supports HIPAA Safe Harbor 18 identifiers ONLY
+Medical information is preserved for healthcare use
 """
 
 import re
@@ -27,8 +27,9 @@ except:
 
 def detect_pii_data(text: str) -> List[Dict[str, Any]]:
     """
-    Enhanced PII detection including medical entities.
-    Combines AWS Comprehend (if available) with custom medical detection.
+    HIPAA-compliant PII detection.
+    Only detects the 18 HIPAA Safe Harbor identifiers.
+    Does NOT detect medical/diagnostic information.
     """
     entities = []
     
@@ -40,24 +41,25 @@ def detect_pii_data(text: str) -> List[Dict[str, Any]]:
                 LanguageCode='en'
             )
             
-            # Convert AWS response to our format
+            # Convert AWS response to our format - filter out medical entities
             for entity in response.get('Entities', []):
-                entities.append({
-                    'Type': entity['Type'],
-                    'originalData': text[entity['BeginOffset']:entity['EndOffset']],
-                    'BeginOffset': entity['BeginOffset'],
-                    'EndOffset': entity['EndOffset'],
-                    'Score': entity['Score']
-                })
+                # Only include true PII, not medical information
+                if entity['Type'] not in ['DIAGNOSIS', 'MEDICATION', 'MEDICAL_CONDITION']:
+                    entities.append({
+                        'Type': entity['Type'],
+                        'originalData': text[entity['BeginOffset']:entity['EndOffset']],
+                        'BeginOffset': entity['BeginOffset'],
+                        'EndOffset': entity['EndOffset'],
+                        'Score': entity['Score']
+                    })
         except Exception as e:
             print(f"AWS Comprehend error: {e}, falling back to local detection")
     
     # Always run local detection for patterns AWS might miss
     local_entities = detect_local_pii(text)
-    medical_entities = detect_medical_entities(text)
     
     # Combine all entities
-    all_entities = entities + local_entities + medical_entities
+    all_entities = entities + local_entities
     
     # Remove duplicates and overlapping entities
     cleaned_entities = remove_overlapping_entities(all_entities)
@@ -68,8 +70,16 @@ def detect_pii_data(text: str) -> List[Dict[str, Any]]:
 def detect_local_pii(text: str) -> List[Dict[str, Any]]:
     """
     Local PII detection using regex patterns.
+    Only detects HIPAA Safe Harbor identifiers.
     """
     entities = []
+    
+    # HIPAA Identifier 1: Names (but NOT healthcare provider names)
+    # First, let's identify healthcare provider names to exclude them
+    provider_titles = r'\b(?:Dr\.?|Doctor|MD|RN|NP|PA|Nurse|Physician|Therapist|Psychiatrist|Psychologist|Counselor)\b'
+    provider_pattern = rf'{provider_titles}\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*'
+    provider_matches = list(re.finditer(provider_pattern, text))
+    provider_spans = [(m.start(), m.end()) for m in provider_matches]
     
     # Name patterns - Enhanced to catch more name formats
     name_patterns = [
@@ -77,22 +87,31 @@ def detect_local_pii(text: str) -> List[Dict[str, Any]]:
         r'Name:\s*([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)',
         # Patient: pattern
         r'Patient:\s*([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)',
-        # General name pattern (First Last)
-        r'\b([A-Z][a-z]+\s+[A-Z][a-z]+)(?=\s*(?:DOB|Phone|Address|,|\n|$))',
+        # Relative patterns
+        r'\b(?:mother|father|sister|brother|spouse|wife|husband|son|daughter|parent)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)',
+        # General name pattern (First Last) - but only in certain contexts
+        r'\b([A-Z][a-z]+\s+[A-Z][a-z]+)(?=\s*(?:DOB|Phone|Address|,|\n|works|lives|employed))',
     ]
     
     for pattern in name_patterns:
-        for match in re.finditer(pattern, text):
-            name = match.group(1)
-            entities.append({
-                'Type': 'NAME',
-                'originalData': name,
-                'BeginOffset': match.start(1),
-                'EndOffset': match.end(1),
-                'Score': 0.95
-            })
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            name_start = match.start(1)
+            name_end = match.end(1)
+            
+            # Check if this name is a healthcare provider
+            is_provider = any(name_start >= ps and name_end <= pe for ps, pe in provider_spans)
+            
+            if not is_provider:
+                name = match.group(1)
+                entities.append({
+                    'Type': 'NAME',
+                    'originalData': name,
+                    'BeginOffset': name_start,
+                    'EndOffset': name_end,
+                    'Score': 0.95
+                })
     
-    # Email pattern
+    # HIPAA Identifier 3: Email addresses
     email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
     for match in re.finditer(email_pattern, text):
         entities.append({
@@ -103,11 +122,11 @@ def detect_local_pii(text: str) -> List[Dict[str, Any]]:
             'Score': 0.99
         })
     
-    # Phone number patterns
+    # HIPAA Identifier 4: Phone numbers
     phone_patterns = [
-        r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b',  # US phone
-        r'\b\(\d{3}\)\s*\d{3}[-.]?\d{4}\b',  # US phone with parentheses
-        r'\b\+?1?\s*\(?(\d{3})\)?[-.\s]?(\d{3})[-.\s]?(\d{4})\b'  # Various formats
+        r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b',
+        r'\b\(\d{3}\)\s*\d{3}[-.]?\d{4}\b',
+        r'\b\+?1?\s*\(?(\d{3})\)?[-.\s]?(\d{3})[-.\s]?(\d{4})\b'
     ]
     for pattern in phone_patterns:
         for match in re.finditer(pattern, text):
@@ -119,7 +138,10 @@ def detect_local_pii(text: str) -> List[Dict[str, Any]]:
                 'Score': 0.95
             })
     
-    # SSN pattern
+    # HIPAA Identifier 5: Fax numbers (same as phone pattern)
+    # Already covered by phone patterns above
+    
+    # HIPAA Identifier 7: Social Security Numbers
     ssn_pattern = r'\b\d{3}-\d{2}-\d{4}\b'
     for match in re.finditer(ssn_pattern, text):
         entities.append({
@@ -128,14 +150,14 @@ def detect_local_pii(text: str) -> List[Dict[str, Any]]:
             'BeginOffset': match.start(),
             'EndOffset': match.end(),
             'Score': 0.98
-            })
+        })
     
-    # Date patterns - Enhanced
+    # HIPAA Identifier 3: Dates (except year)
     date_patterns = [
-        r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b',  # MM/DD/YYYY or MM-DD-YYYY
-        r'\b\d{2,4}[/-]\d{1,2}[/-]\d{1,2}\b',  # YYYY/MM/DD
-        r'\b\d{1,2}\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{2,4}\b',  # DD Month YYYY
-        r'\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{2,4}\b'  # Month DD, YYYY
+        r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b',
+        r'\b\d{2,4}[/-]\d{1,2}[/-]\d{1,2}\b',
+        r'\b\d{1,2}\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{2,4}\b',
+        r'\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{2,4}\b'
     ]
     for pattern in date_patterns:
         for match in re.finditer(pattern, text, re.IGNORECASE):
@@ -147,7 +169,7 @@ def detect_local_pii(text: str) -> List[Dict[str, Any]]:
                 'Score': 0.9
             })
     
-    # Credit card pattern (simplified)
+    # HIPAA Identifier 10: Account numbers (credit cards)
     cc_pattern = r'\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b'
     for match in re.finditer(cc_pattern, text):
         entities.append({
@@ -158,7 +180,7 @@ def detect_local_pii(text: str) -> List[Dict[str, Any]]:
             'Score': 0.95
         })
     
-    # ZIP code pattern
+    # HIPAA Identifier 2: Geographic subdivisions - ZIP codes
     zip_pattern = r'\b\d{5}(?:-\d{4})?\b'
     for match in re.finditer(zip_pattern, text):
         # Check if it's not part of a longer number
@@ -172,7 +194,7 @@ def detect_local_pii(text: str) -> List[Dict[str, Any]]:
                     'Score': 0.85
                 })
     
-    # Address pattern - captures full addresses
+    # HIPAA Identifier 2: Geographic subdivisions - Addresses
     address_pattern = r'\b\d+\s+[A-Za-z\s]+(?:St|Street|Ave|Avenue|Rd|Road|Dr|Drive|Ln|Lane|Blvd|Boulevard|Way|Court|Ct|Plaza|Place|Pl)\.?\s*,?\s*[A-Za-z\s]+,?\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?'
     for match in re.finditer(address_pattern, text):
         entities.append({
@@ -183,37 +205,7 @@ def detect_local_pii(text: str) -> List[Dict[str, Any]]:
             'Score': 0.9
         })
     
-    return entities
-
-
-def detect_medical_entities(text: str) -> List[Dict[str, Any]]:
-    """
-    Detect medical-specific entities in text.
-    """
-    entities = []
-    
-    # Diagnosis patterns - Enhanced to catch common conditions
-    diagnosis_patterns = [
-        # After "Diagnosis:"
-        r'Diagnosis:\s*([^\n]+)',
-        # Common conditions
-        r'\b(Hypertension|Type \d Diabetes|Diabetes|Alzheimer\'s|Dementia|Depression|Anxiety|COPD|CHF|CAD|MI|CVA|TIA)\b',
-        # ICD codes
-        r'\b[A-TV-Z][0-9][0-9AB]\.?[0-9]{0,4}\b'
-    ]
-    
-    for pattern in diagnosis_patterns:
-        for match in re.finditer(pattern, text, re.IGNORECASE):
-            diagnosis_text = match.group(1) if match.lastindex else match.group()
-            entities.append({
-                'Type': 'DIAGNOSIS',
-                'originalData': diagnosis_text,
-                'BeginOffset': match.start() if not match.lastindex else match.start(1),
-                'EndOffset': match.end() if not match.lastindex else match.end(1),
-                'Score': 0.95
-            })
-    
-    # MRN patterns
+    # HIPAA Identifier 8: Medical Record Numbers
     mrn_patterns = [
         r'\b(?:MRN|mrn|Medical Record Number)[\s:#-]*([A-Z0-9-]+)\b',
         r'\b(?:Patient ID|patient id)[\s:#-]*([A-Z0-9-]+)\b',
@@ -229,86 +221,15 @@ def detect_medical_entities(text: str) -> List[Dict[str, Any]]:
                 'Score': 0.95
             })
     
-    # Medication patterns - Enhanced
-    med_patterns = [
-        # Medications: pattern
-        r'Medications:\s*([^\n]+)',
-        # Drug name + dosage
-        r'\b([A-Z][a-z]+(?:in|ol|ide|ate|ine|one|pril|artan|statin)?\s+\d+\s*(?:mg|mcg|g|ml|mL|units?|IU))',
-        # Common medications by name
-        r'\b(Metformin|Lisinopril|Metoprolol|Atorvastatin|Simvastatin|Amlodipine|Losartan|Gabapentin|Insulin|Aspirin)\b'
-    ]
-    
-    for pattern in med_patterns:
-        for match in re.finditer(pattern, text, re.IGNORECASE):
-            med_text = match.group(1) if match.lastindex else match.group()
-            # Split medication list if it contains multiple meds
-            if ',' in med_text:
-                for med in med_text.split(','):
-                    med = med.strip()
-                    if med:
-                        entities.append({
-                            'Type': 'MEDICATION',
-                            'originalData': med,
-                            'BeginOffset': text.find(med),
-                            'EndOffset': text.find(med) + len(med),
-                            'Score': 0.85
-                        })
-            else:
-                entities.append({
-                    'Type': 'MEDICATION',
-                    'originalData': med_text,
-                    'BeginOffset': match.start() if not match.lastindex else match.start(1),
-                    'EndOffset': match.end() if not match.lastindex else match.end(1),
-                    'Score': 0.85
-                })
-    
-    # Lab values with units
-    lab_patterns = [
-        r'\b\d+\.?\d*\s*(?:mg/dL|mmol/L|mEq/L|g/dL|%|mmHg|°F|°C)\b',
-        r'\b(?:A1C|HbA1c|Hemoglobin A1c)[\s:]+\d+\.?\d*\s*%?\b',
-        r'\b(?:Glucose|Creatinine|Cholesterol)[\s:]+\d+\.?\d*\s*(?:mg/dL)?\b'
-    ]
-    for pattern in lab_patterns:
-        for match in re.finditer(pattern, text, re.IGNORECASE):
-            entities.append({
-                'Type': 'LAB_VALUE',
-                'originalData': match.group(),
-                'BeginOffset': match.start(),
-                'EndOffset': match.end(),
-                'Score': 0.85
-            })
-    
-    # Provider/Doctor names (Dr. FirstName LastName pattern)
-    provider_pattern = r'\b(?:Dr\.?|Doctor|Physician)\s+[A-Z][a-z]+\s+[A-Z][a-z]+\b'
-    for match in re.finditer(provider_pattern, text):
-        entities.append({
-            'Type': 'NAME',
-            'originalData': match.group(),
-            'BeginOffset': match.start(),
-            'EndOffset': match.end(),
-            'Score': 0.9
-        })
-    
-    # NPI (National Provider Identifier) - 10 digits
-    npi_pattern = r'\b(?:NPI|npi)[\s:#-]*(\d{10})\b'
-    for match in re.finditer(npi_pattern, text):
-        entities.append({
-            'Type': 'PROVIDER_ID',
-            'originalData': match.group(),
-            'BeginOffset': match.start(),
-            'EndOffset': match.end(),
-            'Score': 0.95
-        })
-    
-    # Insurance ID patterns - Enhanced
+    # HIPAA Identifier 9: Health plan beneficiary numbers
     insurance_patterns = [
         r'Insurance ID:\s*([A-Z0-9]+)',
-        r'\b[A-Z]{1,3}\d{6,12}\b'
+        r'\b(?:Member ID|Policy Number)[\s:#-]*([A-Z0-9-]+)\b',
+        r'\b[A-Z]{1,3}\d{6,12}\b'  # Common insurance ID format
     ]
     for pattern in insurance_patterns:
-        for match in re.finditer(pattern, text):
-            # For the first pattern, use group 1
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            # For the first two patterns, use group 1
             if match.lastindex:
                 entities.append({
                     'Type': 'INSURANCE_ID',
@@ -318,9 +239,9 @@ def detect_medical_entities(text: str) -> List[Dict[str, Any]]:
                     'Score': 0.95
                 })
             else:
-                # Check context for the second pattern
+                # Check context for the third pattern
                 context = text[max(0, match.start()-20):min(len(text), match.end()+20)].lower()
-                if any(word in context for word in ['insurance', 'member', 'policy', 'id']):
+                if any(word in context for word in ['insurance', 'member', 'policy', 'beneficiary']):
                     entities.append({
                         'Type': 'INSURANCE_ID',
                         'originalData': match.group(),
@@ -329,7 +250,86 @@ def detect_medical_entities(text: str) -> List[Dict[str, Any]]:
                         'Score': 0.85
                     })
     
-    # Clinical trial identifiers
+    # HIPAA Identifier 11: Certificate/License numbers
+    license_pattern = r'\b(?:License|Certificate)[\s#:]*([A-Z0-9-]+)\b'
+    for match in re.finditer(license_pattern, text, re.IGNORECASE):
+        entities.append({
+            'Type': 'LICENSE_NUMBER',
+            'originalData': match.group(),
+            'BeginOffset': match.start(),
+            'EndOffset': match.end(),
+            'Score': 0.9
+        })
+    
+    # HIPAA Identifier 12: Vehicle identifiers
+    vehicle_patterns = [
+        r'\b(?:License Plate|Plate)[\s:#]*([A-Z0-9-]+)\b',
+        r'\bVIN[\s:#]*([A-Z0-9]{17})\b'
+    ]
+    for pattern in vehicle_patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            entities.append({
+                'Type': 'VEHICLE_ID',
+                'originalData': match.group(),
+                'BeginOffset': match.start(),
+                'EndOffset': match.end(),
+                'Score': 0.95
+            })
+    
+    # HIPAA Identifier 13: Device identifiers and serial numbers
+    device_patterns = [
+        r'\b(?:Serial Number|Serial|SN)[\s:#]*([A-Z0-9-]+)\b',
+        r'\b(?:Device ID|Device)[\s:#]*([A-Z0-9-]+)\b',
+        r'\b(?:Pacemaker|Pump|Implant)\s+(?:ID|Serial)[\s:#]*([A-Z0-9-]+)\b'
+    ]
+    for pattern in device_patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            entities.append({
+                'Type': 'DEVICE_ID',
+                'originalData': match.group(),
+                'BeginOffset': match.start(),
+                'EndOffset': match.end(),
+                'Score': 0.95
+            })
+    
+    # HIPAA Identifier 14: URLs
+    url_pattern = r'https?://[^\s]+'
+    for match in re.finditer(url_pattern, text):
+        entities.append({
+            'Type': 'URL',
+            'originalData': match.group(),
+            'BeginOffset': match.start(),
+            'EndOffset': match.end(),
+            'Score': 0.99
+        })
+    
+    # HIPAA Identifier 15: IP addresses
+    ip_pattern = r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b'
+    for match in re.finditer(ip_pattern, text):
+        entities.append({
+            'Type': 'IP_ADDRESS',
+            'originalData': match.group(),
+            'BeginOffset': match.start(),
+            'EndOffset': match.end(),
+            'Score': 0.95
+        })
+    
+    # HIPAA Identifier 16: Biometric identifiers
+    biometric_patterns = [
+        r'\b(?:Fingerprint|Retinal|Voiceprint|Facial Recognition)[\s:]*(ID)?[\s:#]*([A-Z0-9-]+)\b'
+    ]
+    for pattern in biometric_patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            entities.append({
+                'Type': 'BIOMETRIC_ID',
+                'originalData': match.group(),
+                'BeginOffset': match.start(),
+                'EndOffset': match.end(),
+                'Score': 0.95
+            })
+    
+    # HIPAA Identifier 18: Any other unique identifying number
+    # This includes clinical trial identifiers
     trial_pattern = r'\bNCT\d{8}\b'
     for match in re.finditer(trial_pattern, text):
         entities.append({
@@ -340,22 +340,16 @@ def detect_medical_entities(text: str) -> List[Dict[str, Any]]:
             'Score': 0.95
         })
     
-    # Lumbar puncture mentions
-    lumbar_patterns = [
-        r'lumbar puncture',
-        r'spinal tap',
-        r'LP procedure',
-        r'cerebrospinal fluid'
-    ]
-    for pattern in lumbar_patterns:
-        for match in re.finditer(pattern, text, re.IGNORECASE):
-            entities.append({
-                'Type': 'MEDICAL_PROCEDURE',
-                'originalData': match.group(),
-                'BeginOffset': match.start(),
-                'EndOffset': match.end(),
-                'Score': 0.9
-            })
+    # Employee IDs
+    employee_pattern = r'\b(?:Employee ID|EID)[\s:#]*([A-Z0-9-]+)\b'
+    for match in re.finditer(employee_pattern, text, re.IGNORECASE):
+        entities.append({
+            'Type': 'EMPLOYEE_ID',
+            'originalData': match.group(),
+            'BeginOffset': match.start(),
+            'EndOffset': match.end(),
+            'Score': 0.9
+        })
     
     return entities
 
@@ -389,304 +383,12 @@ def remove_overlapping_entities(entities: List[Dict[str, Any]]) -> List[Dict[str
     return cleaned
 
 
-def generate_non_medical_replacement(entity_type: str, original_value: str) -> str:
-    """
-    Generate non-medical replacement data for medical entities.
-    Uses hash for consistent replacements.
-    """
-    # Use hash of original value to get consistent fake data
-    hash_val = int(hashlib.md5(original_value.encode()).hexdigest()[:8], 16)
-    
-    non_medical_replacements = {
-        'DIAGNOSIS': [
-            'Blue Mountain Project',
-            'Sunrise Initiative',
-            'Green Valley Protocol',
-            'Ocean Wave Study',
-            'Silver Bridge Program',
-            'Golden Gate Analysis',
-            'Crystal River Method',
-            'Desert Sand Framework',
-            'Northern Light Process',
-            'Eastern Shore Approach',
-            'Maple Leaf System',
-            'Thunder Bay Model',
-            'Moonlight Strategy',
-            'Starlight Pattern',
-            'Rainbow Arc Design'
-        ],
-        'ORGANIZATION': [
-            'Alpine Resources Center',
-            'Riverside Associates',
-            'Oakwood Services',
-            'Pinehurst Group',
-            'Lakeside Institute',
-            'Mountain View Partners',
-            'Valley Stream Corp',
-            'Oceanside Enterprises',
-            'Hillcrest Solutions',
-            'Meadowbrook Systems',
-            'Northwind Analytics',
-            'Southgate Dynamics',
-            'Eastside Innovations',
-            'Westfield Operations',
-            'Central Park Agency'
-        ],
-        'MEDICATION': [
-            'Product Code A1B2',
-            'Item Number C3D4',
-            'Reference ID E5F6',
-            'Catalog Entry G7H8',
-            'Stock Code I9J0',
-            'Asset Tag K1L2',
-            'Inventory ID M3N4',
-            'Serial Code O5P6',
-            'Batch Number Q7R8',
-            'Lot Reference S9T0'
-        ],
-        'MRN': [
-            'REF-100234',
-            'ID-200567',
-            'NUM-300890',
-            'CODE-401234',
-            'TAG-502345',
-            'KEY-603456',
-            'SER-704567',
-            'DOC-805678',
-            'REC-906789',
-            'FILE-007890'
-        ],
-        'PROVIDER_ID': [
-            '1000000001',
-            '2000000002',
-            '3000000003',
-            '4000000004',
-            '5000000005',
-            '6000000006',
-            '7000000007',
-            '8000000008',
-            '9000000009',
-            '1000000010'
-        ],
-        'INSURANCE_ID': [
-            'POL123456789',
-            'MEM234567890',
-            'GRP345678901',
-            'PLN456789012',
-            'COV567890123',
-            'BEN678901234',
-            'SUB789012345',
-            'ACC890123456',
-            'REG901234567',
-            'SVC012345678'
-        ],
-        'LAB_VALUE': [
-            'Metric A: 42.7',
-            'Index B: 3.14',
-            'Score C: 98.6',
-            'Value D: 7.25',
-            'Reading E: 120',
-            'Result F: 0.85',
-            'Output G: 15.3',
-            'Level H: 6.02',
-            'Rate I: 72.0',
-            'Factor J: 1.618'
-        ],
-        'PROCEDURE': [
-            'Process 100-A',
-            'Method 200-B',
-            'Technique 300-C',
-            'Protocol 400-D',
-            'Operation 500-E',
-            'Function 600-F',
-            'Activity 700-G',
-            'Task 800-H',
-            'Action 900-I',
-            'Step 1000-J'
-        ],
-        'MEDICAL_CONDITION': [
-            'Factor X-12',
-            'Element Y-34',
-            'Component Z-56',
-            'Variable W-78',
-            'Parameter V-90',
-            'Attribute U-21',
-            'Property T-43',
-            'Feature S-65',
-            'Characteristic R-87',
-            'Aspect Q-09'
-        ],
-        'CLINICAL_TRIAL_ID': [
-            'TRIAL10000001',
-            'STUDY20000002',
-            'PROTO30000003',
-            'RESRCH40000004',
-            'TEST50000005',
-            'EVAL60000006',
-            'ASSESS70000007',
-            'REVIEW80000008',
-            'SURVEY90000009',
-            'PROJECT00000010'
-        ],
-        'JOB_TITLE': [
-            'Senior Analyst',
-            'Project Coordinator',
-            'Operations Manager',
-            'Technical Lead',
-            'Research Associate',
-            'Quality Specialist',
-            'Systems Administrator',
-            'Program Director',
-            'Data Architect',
-            'Process Engineer',
-            'Strategic Consultant',
-            'Regional Supervisor',
-            'Implementation Expert',
-            'Solutions Designer',
-            'Integration Specialist'
-        ],
-        'CLINICAL_NOTE': [
-            'standard review completed',
-            'routine evaluation performed',
-            'scheduled assessment done',
-            'periodic check finished',
-            'regular inspection conducted',
-            'systematic review executed',
-            'comprehensive analysis completed',
-            'detailed examination performed',
-            'thorough investigation done',
-            'methodical survey finished'
-        ],
-        'SLEEP_PATTERN': [
-            'Pattern Alpha-7',
-            'Sequence Beta-3',
-            'Rhythm Gamma-1',
-            'Cycle Delta-9',
-            'Phase Epsilon-4',
-            'Mode Zeta-2',
-            'State Eta-8',
-            'Form Theta-5',
-            'Type Iota-6',
-            'Configuration Kappa-0'
-        ],
-        'PSYCHIATRIC_SYMPTOM': [
-            'Status Green-Active',
-            'Condition Blue-Stable',
-            'State Yellow-Monitored',
-            'Phase Orange-Tracked',
-            'Level Purple-Observed',
-            'Mode Teal-Recorded',
-            'Type Silver-Noted',
-            'Form Gold-Documented',
-            'Pattern Bronze-Logged',
-            'Configuration Gray-Filed'
-        ],
-        'DAILY_ACTIVITY': [
-            'Process Type A1',
-            'Method Category B2',
-            'Approach Level C3',
-            'System Grade D4',
-            'Protocol Class E5',
-            'Procedure Rank F6',
-            'Operation Tier G7',
-            'Function Stage H8',
-            'Activity Phase I9',
-            'Task Mode J0'
-        ],
-        'NEUROPSYCH_SCORE': [
-            '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'
-        ],
-        'CAREGIVER_SCORE': [
-            '1', '2', '3', '4', '5'
-        ],
-        'FAMILY_HISTORY': [
-            'experienced a health event in their 70s',
-            'had a medical condition in their 80s',
-            'developed symptoms in their 90s',
-            'showed changes in their senior years',
-            'had health concerns in later life',
-            'experienced age-related changes',
-            'developed a condition over time',
-            'showed progressive symptoms',
-            'had multiple health factors',
-            'experienced combined conditions'
-        ],
-        'OCCUPATION': [
-            'professional services',
-            'administrative role',
-            'management position',
-            'technical specialist',
-            'advisory capacity',
-            'operational duties',
-            'strategic planning',
-            'service delivery',
-            'project coordination',
-            'organizational leadership'
-        ],
-        'CLINICAL_OBSERVATION': [
-            'standard findings noted',
-            'typical presentation observed',
-            'expected parameters recorded',
-            'routine assessment completed',
-            'normal range detected',
-            'baseline characteristics present',
-            'standard markers identified',
-            'regular patterns observed',
-            'consistent findings documented',
-            'expected variations noted'
-        ],
-        'MEDICAL_PROCEDURE': [
-            'standard evaluation discussed',
-            'routine assessment considered',
-            'optional testing reviewed',
-            'voluntary participation offered',
-            'research opportunity presented',
-            'diagnostic option explained',
-            'elective procedure mentioned',
-            'screening method discussed',
-            'investigative approach considered',
-            'clinical protocol reviewed'
-        ],
-        'DURATION': [
-            'several years',
-            'extended period',
-            'considerable time',
-            'lengthy duration',
-            'sustained timeframe',
-            'prolonged interval',
-            'significant span',
-            'substantial period',
-            'continuous duration',
-            'ongoing timeframe'
-        ],
-        'CAREGIVING_HISTORY': [
-            'provided family support',
-            'assisted with care needs',
-            'helped family member',
-            'supported relative',
-            'gave personal assistance',
-            'offered family care',
-            'provided home support',
-            'assisted with daily needs',
-            'helped with personal care',
-            'supported family situation'
-        ]
-    }
-    
-    if entity_type in non_medical_replacements:
-        options = non_medical_replacements[entity_type]
-        return options[hash_val % len(options)]
-    else:
-        return f"REF-{entity_type[:3]}-{hash_val % 10000:04d}"
-
-
 def generate_fake_data(entity_type: str) -> Tuple[str, str]:
     """
     Generate fake data based on entity type.
     Returns tuple of (generator_name, fake_value)
-    Modified to use non-medical replacements for medical entities.
+    Only handles HIPAA identifiers, not medical information.
     """
-    # Standard PII types - keep using Faker for these
     if entity_type == 'NAME':
         return 'faker', fake.name()
     elif entity_type == 'ADDRESS':
@@ -707,32 +409,34 @@ def generate_fake_data(entity_type: str) -> Tuple[str, str]:
         return 'faker', fake.url()
     elif entity_type == 'IP_ADDRESS':
         return 'faker', fake.ipv4()
-    elif entity_type == 'MAC_ADDRESS':
-        return 'faker', fake.mac_address()
-    elif entity_type == 'LICENSE_PLATE':
+    elif entity_type == 'MRN':
+        # Generate medical record number
+        return 'faker', f"MRN-{fake.random_number(digits=8)}"
+    elif entity_type == 'INSURANCE_ID':
+        # Generate insurance ID
+        prefix = random.choice(['POL', 'MEM', 'GRP'])
+        return 'faker', f"{prefix}{fake.random_number(digits=9)}"
+    elif entity_type == 'LICENSE_NUMBER':
         return 'faker', fake.license_plate()
-    elif entity_type == 'BANK_ACCOUNT':
-        return 'faker', fake.iban()
+    elif entity_type == 'VEHICLE_ID':
+        # Generate VIN-like identifier
+        return 'faker', ''.join(random.choices(string.ascii_uppercase + string.digits, k=17))
+    elif entity_type == 'DEVICE_ID':
+        # Generate device serial number
+        return 'faker', f"SN-{fake.random_number(digits=10)}"
+    elif entity_type == 'BIOMETRIC_ID':
+        return 'faker', f"BIO-{fake.random_number(digits=12)}"
+    elif entity_type == 'CLINICAL_TRIAL_ID':
+        return 'faker', f"NCT{fake.random_number(digits=8)}"
+    elif entity_type == 'EMPLOYEE_ID':
+        return 'faker', f"EMP{fake.random_number(digits=6)}"
     elif entity_type == 'DOB':
         # Generate a date of birth between 18 and 90 years ago
         days_ago = random.randint(18*365, 90*365)
         dob = datetime.now() - timedelta(days=days_ago)
         return 'faker', dob.strftime('%m/%d/%Y')
-    
-    # Medical-specific types - use non-medical replacements
-    elif entity_type in ['DIAGNOSIS', 'ORGANIZATION', 'MEDICATION', 'MRN', 'PROVIDER_ID',
-                        'INSURANCE_ID', 'LAB_VALUE', 'PROCEDURE', 'MEDICAL_CONDITION',
-                        'CLINICAL_TRIAL_ID', 'JOB_TITLE', 'CLINICAL_NOTE', 'SLEEP_PATTERN',
-                        'PSYCHIATRIC_SYMPTOM', 'DAILY_ACTIVITY', 'NEUROPSYCH_SCORE',
-                        'CAREGIVER_SCORE', 'FAMILY_HISTORY', 'OCCUPATION',
-                        'CLINICAL_OBSERVATION', 'MEDICAL_PROCEDURE', 'DURATION',
-                        'CAREGIVING_HISTORY']:
-        # Generate a random value to use as seed for consistent replacements
-        random_value = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
-        return 'non_medical_faker', generate_non_medical_replacement(entity_type, random_value)
-    
-    # Generic fallback
     else:
+        # Generic fallback for any other unique identifier
         return 'generic', f"[REDACTED-{entity_type}]"
 
 
@@ -761,17 +465,7 @@ def generate_fake_entities(masterid: str, entities: List[Dict], existing_records
         
         # Generate new fake data if needed
         if not fake_data:
-            # For medical entities, use non-medical replacements
-            if entity['Type'] in ['DIAGNOSIS', 'ORGANIZATION', 'MEDICATION', 'MRN', 
-                                 'PROVIDER_ID', 'INSURANCE_ID', 'LAB_VALUE', 'PROCEDURE',
-                                 'MEDICAL_CONDITION', 'CLINICAL_TRIAL_ID', 'NEUROPSYCH_SCORE',
-                                 'CAREGIVER_SCORE', 'FAMILY_HISTORY', 'OCCUPATION',
-                                 'CLINICAL_OBSERVATION', 'MEDICAL_PROCEDURE', 'DURATION',
-                                 'CAREGIVING_HISTORY']:
-                generator_name = 'non_medical_faker'
-                fake_data = generate_non_medical_replacement(entity['Type'], entity['originalData'])
-            else:
-                generator_name, fake_data = generate_fake_data(entity['Type'])
+            generator_name, fake_data = generate_fake_data(entity['Type'])
             
             # Store the fake data with the entity for later use
             entity['fakeData'] = fake_data
