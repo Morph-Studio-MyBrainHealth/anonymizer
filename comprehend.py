@@ -102,7 +102,7 @@ def detect_local_pii(text: str) -> List[Dict[str, Any]]:
         # Standalone capitalized words that could be names in specific contexts
         (r'(?:^|\.\s+)([A-Z][a-z]+)(?:\s*[:,]|\s+(?:how|are|is|was|has|had|will|would|can|could|should))', False),
         # Simple First Last pattern for JSON/isolated contexts (must be exactly two capitalized words)
-        (r'^([A-Z][a-z]+\s+[A-Z][a-z]+)
+        (r'^([A-Z][a-z]+\s+[A-Z][a-z]+)$', False),
     
     # Common medical/non-name terms to exclude
     medical_terms = [
