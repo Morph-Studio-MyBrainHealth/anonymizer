@@ -194,6 +194,7 @@ HTML_TEMPLATE = '''
         <button class="example-btn" onclick="loadExample('profile')">Patient Profile</button>
         <button class="example-btn json-btn" onclick="loadExample('json_example')">JSON Example</button>
         <button class="example-btn json-btn" onclick="loadExample('json_nested')">Nested JSON</button>
+        <button class="example-btn json-btn" onclick="loadExample('neuropsych')">Neuropsychiatric Inventory</button>
     </div>
     
     <script>
@@ -655,6 +656,53 @@ Medications: Metoprolol 50mg daily, Metformin 500mg BID`,
       "managing_medications": []
     }
   }
+}`,
+
+                neuropsych: `{
+  "patient_info": {
+    "name": "Sarah Johnson",
+    "mrn": "MRN-789456"
+  },
+  "neuropsychiatric_inventory": {
+    "apathy": {
+      "score": 2,
+      "caregiver_distress": 2
+    },
+    "anxiety": {
+      "score": 1,
+      "caregiver_distress": 1
+    },
+    "depression": {
+      "score": 2,
+      "caregiver_distress": 3
+    }
+  },
+  "patient_background": {
+    "family_history": {
+      "father": "diagnosed with Alzheimer's in his early 80s",
+      "mother": "diagnosed with vascular dementia and frontotemporal dementia in her 90s"
+    },
+    "symptom_duration": "more than 10 years",
+    "employment_status": "retired",
+    "caregiving_history": "carer for your poorly mother",
+    "previous_occupation": "led the council's work on research and policy, conducted surveys and statistical analyses, and chaired meetings"
+  },
+  "bhc_team_discussion": {
+    "lumbar_puncture_notes": [
+      "discussion about lumbar puncture as a routine procedure",
+      "patient expressed interest in participating in the research project but declined the option of lumbar puncture"
+    ]
+  },
+  "clinical_observations": [
+    "no signs of mood disorders or psychosis",
+    "speech was normal",
+    "good insight into condition",
+    "fully alert and responsive",
+    "normal facial and hand movements",
+    "no tremors observed",
+    "mood was reportedly stable",
+    "occasionally struggled to find the correct words"
+  ]
 }`
             };
             
