@@ -1,6 +1,7 @@
 """
 Database methods for PII/PHI anonymization system
 Thread-safe version with proper session management
+Updated to only track HIPAA identifiers
 """
 
 import uuid
@@ -170,33 +171,20 @@ def insert_piidata(masterid, original, anonymized, method, metadata=None):
 def get_anonymization_statistics(masterid=None):
     """
     Get anonymization statistics for a user or globally.
-    Enhanced to properly count all entity types including enhanced anonymization.
+    Updated to only track HIPAA identifiers.
     """
     session = db_utils.get_db_session()
     try:
-        # Standard PII types
-        standard_pii_types = [
-            'NAME', 'EMAIL', 'PHONE_NUMBER', 'SSN', 'ADDRESS', 
-            'DATE', 'CREDIT_DEBIT_NUMBER', 'ZIP', 'URL', 'IP_ADDRESS',
-            'MAC_ADDRESS', 'LICENSE_PLATE', 'BANK_ACCOUNT', 'DOB'
-        ]
-        
-        # Medical entity types - updated with new types
-        medical_types = [
-            'DIAGNOSIS', 'MEDICATION', 'MRN', 'PROVIDER_ID', 'INSURANCE_ID',
-            'LAB_VALUE', 'PROCEDURE', 'MEDICAL_CONDITION', 'CLINICAL_TRIAL_ID',
-            'ORGANIZATION', 'JOB_TITLE', 'CLINICAL_NOTE', 'SLEEP_PATTERN',
-            'PSYCHIATRIC_SYMPTOM', 'DAILY_ACTIVITY', 'COGNITIVE_SCORE',
-            'BRAIN_SCAN_RESULT',
-            # New neuropsychiatric and clinical types
-            'NEUROPSYCH_SCORE', 'CAREGIVER_SCORE', 'FAMILY_HISTORY',
-            'OCCUPATION', 'CLINICAL_OBSERVATION', 'MEDICAL_PROCEDURE',
-            'DURATION', 'CAREGIVING_HISTORY'
-        ]
-        
-        # Enhanced anonymization types
-        enhanced_types = [
-            'JSON_KEY', 'JSON_STRUCTURE', 'GENERIC_VALUE'
+        # HIPAA Safe Harbor identifiers (18 types)
+        hipaa_identifiers = [
+            # Core identifiers
+            'NAME', 'EMAIL', 'PHONE_NUMBER', 'SSN', 'ADDRESS', 'DATE', 'DOB', 'ZIP',
+            # ID numbers
+            'MRN', 'INSURANCE_ID', 'LICENSE_NUMBER', 'EMPLOYEE_ID',
+            # Technical identifiers
+            'CREDIT_DEBIT_NUMBER', 'URL', 'IP_ADDRESS', 'DEVICE_ID', 'VEHICLE_ID',
+            # Other
+            'BIOMETRIC_ID', 'CLINICAL_TRIAL_ID', 'OTHER'
         ]
         
         if masterid:
@@ -220,28 +208,17 @@ def get_anonymization_statistics(masterid=None):
         # Process results
         entity_types = {}
         total_entities = 0
-        medical_entities = 0
-        pii_entities = 0
-        enhanced_entities = 0
+        hipaa_entities = 0
         
         for row in result:
             pii_type = row['piiType']
             count = row['count']
             
-            # Add to entity types
-            entity_types[pii_type] = count
-            total_entities += count
-            
-            # Categorize
-            if pii_type in standard_pii_types:
-                pii_entities += count
-            elif pii_type in medical_types:
-                medical_entities += count
-            elif pii_type in enhanced_types:
-                enhanced_entities += count
-            else:
-                # Unknown type - could be custom
-                medical_entities += count  # Assume medical if not standard
+            # Only count HIPAA identifiers
+            if pii_type in hipaa_identifiers:
+                entity_types[pii_type] = count
+                total_entities += count
+                hipaa_entities += count
         
         # Get additional statistics from PIIData table
         if masterid:
@@ -266,21 +243,17 @@ def get_anonymization_statistics(masterid=None):
         
         return {
             'total_entities': total_entities,
-            'medical_entities': medical_entities,
-            'pii_entities': pii_entities,
-            'enhanced_entities': enhanced_entities,
+            'hipaa_entities': hipaa_entities,
             'entity_types': entity_types,
             'operations': operations,
             'summary': {
                 'unique_entity_types': len(entity_types),
                 'anonymizations': operations.get('ANONYMIZE', 0) + 
                                 operations.get('ANONYMIZE_JSON', 0) + 
-                                operations.get('ANONYMIZE_JSON_SIMPLE', 0) +
-                                operations.get('ANONYMIZE_JSON_ENHANCED', 0),
+                                operations.get('ANONYMIZE_JSON_SIMPLE', 0),
                 'de_anonymizations': operations.get('DE-ANONYMIZE', 0) + 
                                    operations.get('DE_ANONYMIZE_JSON', 0) + 
-                                   operations.get('DE_ANONYMIZE_JSON_SIMPLE', 0) +
-                                   operations.get('DE_ANONYMIZE_JSON_ENHANCED', 0)
+                                   operations.get('DE_ANONYMIZE_JSON_SIMPLE', 0)
             }
         }
         
@@ -288,9 +261,7 @@ def get_anonymization_statistics(masterid=None):
         logger.error(f"Error getting anonymization statistics: {e}")
         return {
             'total_entities': 0,
-            'medical_entities': 0,
-            'pii_entities': 0,
-            'enhanced_entities': 0,
+            'hipaa_entities': 0,
             'entity_types': {},
             'error': str(e)
         }
@@ -420,8 +391,8 @@ def get_user_summary(identity, identityType):
         session.close()
 
 
-# Table creation statements (for reference)
-CREATE_TABLES_SQL = """
+# Table creation statements (for reference and documentation)
+CREATE_TABLES_SQL = '''
 -- Master table for identities
 CREATE TABLE IF NOT EXISTS PIIMaster (
     uuid VARCHAR(36) PRIMARY KEY,
@@ -473,4 +444,6 @@ CREATE TABLE IF NOT EXISTS PIIAuditLog (
     INDEX idx_uuid_action (uuid, action),
     INDEX idx_created_at (created_at)
 );
-"""
+'''
+
+# End of file - db_methods.py
