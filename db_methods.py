@@ -181,12 +181,17 @@ def get_anonymization_statistics(masterid=None):
             'MAC_ADDRESS', 'LICENSE_PLATE', 'BANK_ACCOUNT', 'DOB'
         ]
         
-        # Medical entity types
+        # Medical entity types - updated with new types
         medical_types = [
             'DIAGNOSIS', 'MEDICATION', 'MRN', 'PROVIDER_ID', 'INSURANCE_ID',
             'LAB_VALUE', 'PROCEDURE', 'MEDICAL_CONDITION', 'CLINICAL_TRIAL_ID',
             'ORGANIZATION', 'JOB_TITLE', 'CLINICAL_NOTE', 'SLEEP_PATTERN',
-            'PSYCHIATRIC_SYMPTOM', 'DAILY_ACTIVITY'
+            'PSYCHIATRIC_SYMPTOM', 'DAILY_ACTIVITY', 'COGNITIVE_SCORE',
+            'BRAIN_SCAN_RESULT',
+            # New neuropsychiatric and clinical types
+            'NEUROPSYCH_SCORE', 'CAREGIVER_SCORE', 'FAMILY_HISTORY',
+            'OCCUPATION', 'CLINICAL_OBSERVATION', 'MEDICAL_PROCEDURE',
+            'DURATION', 'CAREGIVING_HISTORY'
         ]
         
         # Enhanced anonymization types
@@ -270,9 +275,11 @@ def get_anonymization_statistics(masterid=None):
                 'unique_entity_types': len(entity_types),
                 'anonymizations': operations.get('ANONYMIZE', 0) + 
                                 operations.get('ANONYMIZE_JSON', 0) + 
+                                operations.get('ANONYMIZE_JSON_SIMPLE', 0) +
                                 operations.get('ANONYMIZE_JSON_ENHANCED', 0),
                 'de_anonymizations': operations.get('DE-ANONYMIZE', 0) + 
                                    operations.get('DE_ANONYMIZE_JSON', 0) + 
+                                   operations.get('DE_ANONYMIZE_JSON_SIMPLE', 0) +
                                    operations.get('DE_ANONYMIZE_JSON_ENHANCED', 0)
             }
         }
