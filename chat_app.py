@@ -298,8 +298,8 @@ HTML_TEMPLATE = '''
                     // Count opening and closing braces/brackets
                     const openBraces = (fixedInput.match(/{/g) || []).length;
                     const closeBraces = (fixedInput.match(/}/g) || []).length;
-                    const openBrackets = (fixedInput.match(/\[/g) || []).length;
-                    const closeBrackets = (fixedInput.match(/\]/g) || []).length;
+                    const openBrackets = (fixedInput.match(/\\[/g) || []).length;
+                    const closeBrackets = (fixedInput.match(/\\]/g) || []).length;
                     
                     // Add missing closing braces/brackets
                     if (openBraces > closeBraces) {
