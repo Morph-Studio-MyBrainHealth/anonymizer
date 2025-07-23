@@ -148,10 +148,36 @@ HTML_TEMPLATE = '''
             white-space: pre-wrap;
             word-wrap: break-word;
         }
+        .info-box {
+            background: #e3f2fd;
+            border: 1px solid #2196F3;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+        .info-box h4 {
+            margin-top: 0;
+            color: #1976D2;
+        }
+        .preserved {
+            color: #4CAF50;
+            font-weight: bold;
+        }
+        .anonymized-item {
+            color: #FF5722;
+            font-weight: bold;
+        }
     </style>
 </head>
 <body>
     <h1>Medical Data Anonymizer Test Chat</h1>
+    
+    <div class="info-box">
+        <h4>HIPAA Safe Harbor Anonymization</h4>
+        <p><span class="anonymized-item">Anonymizes:</span> Names, addresses, dates, phone numbers, emails, SSN, MRN, insurance IDs, and other personal identifiers</p>
+        <p><span class="preserved">Preserves:</span> Diagnoses, medications, lab values, clinical observations, assessment scores, and all medical information</p>
+        <p><strong>Note:</strong> Healthcare provider names (Dr., Nurse, etc.) are NOT anonymized</p>
+    </div>
     
     <div class="container">
         <div class="chat-box">
@@ -189,11 +215,11 @@ HTML_TEMPLATE = '''
         <button class="example-btn" onclick="loadExample('clinical')">Clinical Note</button>
         <button class="example-btn" onclick="loadExample('medications')">Medications</button>
         <button class="example-btn" onclick="loadExample('labs')">Lab Results</button>
-        <button class="example-btn" onclick="loadExample('devices')">Device IDs</button>
+        <button class="example-btn" onclick="loadExample('provider')">With Provider Names</button>
         <button class="example-btn" onclick="loadExample('conversation')">Patient Conversation</button>
         <button class="example-btn" onclick="loadExample('profile')">Patient Profile</button>
         <button class="example-btn json-btn" onclick="loadExample('json_example')">JSON Example</button>
-        <button class="example-btn json-btn" onclick="loadExample('json_nested')">Nested JSON</button>
+        <button class="example-btn json-btn" onclick="loadExample('json_medical')">JSON Medical Data</button>
         <button class="example-btn json-btn" onclick="loadExample('neuropsych')">Neuropsychiatric Inventory</button>
     </div>
     
@@ -333,11 +359,11 @@ HTML_TEMPLATE = '''
                 // Update stats
                 updateStats(data.stats);
                 
-                // Display any entities detected
+                // Display message about what was anonymized
                 if (data.entities_detected === 0) {
-                    showWarning('No entities were detected for anonymization. The anonymizer may not have recognized the medical content.');
+                    showInfo('No personal identifiers were detected. Medical information is preserved.');
                 } else {
-                    showSuccess(`Successfully anonymized ${data.entities_detected} entities.`);
+                    showSuccess(`Successfully anonymized ${data.entities_detected} personal identifiers. All medical information preserved.`);
                 }
                 
                 // Clear input
@@ -356,6 +382,11 @@ HTML_TEMPLATE = '''
         function showSuccess(message) {
             const display = document.getElementById('entity-display');
             display.innerHTML = `<div class="success">${message}</div>`;
+        }
+        
+        function showInfo(message) {
+            const display = document.getElementById('entity-display');
+            display.innerHTML = `<div class="entities" style="background: #e3f2fd; border-left-color: #2196F3;">${message}</div>`;
         }
         
         async function detectEntities() {
@@ -437,9 +468,9 @@ HTML_TEMPLATE = '''
                     'original');
                 
                 if (data.entities_restored > 0) {
-                    showSuccess(`Successfully restored ${data.entities_restored} entities.`);
+                    showSuccess(`Successfully restored ${data.entities_restored} personal identifiers.`);
                 } else {
-                    showWarning('No entities were restored. This may indicate the data was not properly anonymized.');
+                    showWarning('No entities were restored.');
                 }
                 
             } catch (error) {
@@ -459,7 +490,7 @@ HTML_TEMPLATE = '''
         function displayEntities(entities) {
             const display = document.getElementById('entity-display');
             if (!entities || entities.length === 0) {
-                display.innerHTML = '<div class="entities">No entities detected</div>';
+                display.innerHTML = '<div class="entities">No personal identifiers detected. Medical information preserved.</div>';
                 return;
             }
             
@@ -469,7 +500,7 @@ HTML_TEMPLATE = '''
                 entityTypes[e.Type].push(e.originalData);
             });
             
-            let html = '<div class="entities"><strong>Detected Entities:</strong><br>';
+            let html = '<div class="entities"><strong>Detected Personal Identifiers (to be anonymized):</strong><br>';
             for (const [type, values] of Object.entries(entityTypes)) {
                 html += `<div style="margin: 5px 0;">`;
                 html += `<strong>${type}:</strong> `;
@@ -487,7 +518,7 @@ HTML_TEMPLATE = '''
             const statsDiv = document.getElementById('stats');
             statsDiv.innerHTML = `
                 <strong>Statistics:</strong><br>
-                Entities Detected: ${stats.entities_detected}<br>
+                Personal Identifiers Detected: ${stats.entities_detected}<br>
                 Compliance: HIPAA ${stats.hipaa_compliant ? '✓' : '✗'}, 
                 GDPR ${stats.gdpr_compliant ? '✓' : '✗'}
                 ${stats.structure_preserved ? '<br>Structure Preserved: ✓' : ''}
@@ -501,9 +532,7 @@ HTML_TEMPLATE = '''
                 
                 let html = '<div class="success"><strong>Anonymization Statistics:</strong><br>';
                 html += `Total Entities: ${data.total_entities}<br>`;
-                html += `Medical Entities: ${data.medical_entities}<br>`;
-                html += `PII Entities: ${data.pii_entities}<br>`;
-                html += `Enhanced Entities: ${data.enhanced_entities}<br>`;
+                html += `HIPAA Identifiers: ${data.hipaa_entities || data.total_entities}<br>`;
                 
                 if (data.summary) {
                     html += '<br><strong>Operations Summary:</strong><br>';
@@ -574,10 +603,12 @@ Creatinine: 2.1 mg/dL
 Blood pressure: 165/102 mmHg
 Temperature: 101.5°F`,
                 
-                devices: `Implanted Devices: stefr7678
-Pacemaker Serial Number: PM-789456123
-Insulin pump ID: INS-456789ABC
-Clinical Trial: NCT12345678`,
+                provider: `Patient: Jane Doe seen by Dr. Michael Chen
+Referring physician: Dr. Sarah Williams
+Consulting psychiatrist: Dr. Robert Johnson
+Primary nurse: Nurse Patricia Brown RN
+Care coordinator: Mary Thompson
+Insurance: Blue Cross Blue Shield`,
                 
                 conversation: `Doctor: Hello Mrs. Johnson, how are you feeling today?
 Patient: Not great, my blood sugar has been running high, around 250-300.
@@ -600,6 +631,7 @@ Medications: Metoprolol 50mg daily, Metformin 500mg BID`,
     "mrn": "MRN-789456"
   },
   "diagnosis": "Mild Cognitive Impairment (F06.7)",
+  "medications": ["Donepezil 5mg daily", "Memantine 10mg BID"],
   "referral_info": {
     "clinic_name": "Brain Health Clinic",
     "referral_reason": "memory concerns",
@@ -613,48 +645,40 @@ Medications: Metoprolol 50mg daily, Metformin 500mg BID`,
   }
 }`,
                 
-                json_nested: `{
-  "current_symptoms": {
-    "sleep_patterns": [
-      "good sleep",
-      "daytime naps",
-      "nightmares",
-      "snoring",
-      "occasional talking during sleep"
-    ],
-    "physical_challenges": [],
-    "cognitive_challenges": [
-      "Mild Cognitive Impairment",
-      "Alzheimer's"
-    ],
-    "neuropsychiatric_symptoms": {
-      "other": [],
-      "apathy": [],
-      "anxiety": [
-        "developing symptoms of anxiety during stressful period"
-      ],
-      "agitation": [],
-      "delusions": [],
-      "depression": [
-        "developing symptoms of depression during stressful period"
-      ],
-      "irritability": [],
-      "hallucinations": []
+                json_medical: `{
+  "patient_id": "PT-123456",
+  "visit_date": "2025-01-15",
+  "vitals": {
+    "blood_pressure": "140/90",
+    "heart_rate": 78,
+    "temperature": 98.6,
+    "oxygen_saturation": 96
+  },
+  "diagnoses": [
+    "Essential Hypertension (I10)",
+    "Type 2 Diabetes Mellitus (E11.9)",
+    "Hyperlipidemia (E78.5)"
+  ],
+  "medications": [
+    {
+      "name": "Metformin",
+      "dose": "1000mg",
+      "frequency": "BID",
+      "route": "PO"
     },
-    "instrumental_activities_daily_living": {
-      "laundry": [],
-      "shopping": [],
-      "housekeeping": [],
-      "communication": [],
-      "transportation": [
-        "trouble finding your way while driving"
-      ],
-      "food_preparation": [],
-      "managing_finances": [
-        "difficulties managing finances"
-      ],
-      "managing_medications": []
+    {
+      "name": "Lisinopril",
+      "dose": "20mg",
+      "frequency": "Daily",
+      "route": "PO"
     }
+  ],
+  "lab_results": {
+    "hba1c": 7.8,
+    "glucose_fasting": 156,
+    "ldl_cholesterol": 145,
+    "hdl_cholesterol": 38,
+    "triglycerides": 220
   }
 }`,
 
@@ -677,21 +701,10 @@ Medications: Metoprolol 50mg daily, Metformin 500mg BID`,
       "caregiver_distress": 3
     }
   },
-  "patient_background": {
-    "family_history": {
-      "father": "diagnosed with Alzheimer's in his early 80s",
-      "mother": "diagnosed with vascular dementia and frontotemporal dementia in her 90s"
-    },
-    "symptom_duration": "more than 10 years",
-    "employment_status": "retired",
-    "caregiving_history": "carer for your poorly mother",
-    "previous_occupation": "led the council's work on research and policy, conducted surveys and statistical analyses, and chaired meetings"
-  },
-  "bhc_team_discussion": {
-    "lumbar_puncture_notes": [
-      "discussion about lumbar puncture as a routine procedure",
-      "patient expressed interest in participating in the research project but declined the option of lumbar puncture"
-    ]
+  "cognitive_assessment": {
+    "mmse_score": 24,
+    "moca_score": 22,
+    "clock_drawing": "mild impairment"
   },
   "clinical_observations": [
     "no signs of mood disorders or psychosis",
@@ -702,6 +715,11 @@ Medications: Metoprolol 50mg daily, Metformin 500mg BID`,
     "no tremors observed",
     "mood was reportedly stable",
     "occasionally struggled to find the correct words"
+  ],
+  "medications": [
+    "Donepezil 10mg daily",
+    "Memantine 10mg BID",
+    "Citalopram 20mg daily"
   ]
 }`
             };
