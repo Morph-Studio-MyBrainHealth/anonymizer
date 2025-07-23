@@ -505,6 +505,84 @@ def generate_non_medical_replacement(entity_type: str, original_value: str) -> s
             'Function Stage H8',
             'Activity Phase I9',
             'Task Mode J0'
+        ],
+        'NEUROPSYCH_SCORE': [
+            '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'
+        ],
+        'CAREGIVER_SCORE': [
+            '1', '2', '3', '4', '5'
+        ],
+        'FAMILY_HISTORY': [
+            'experienced a health event in their 70s',
+            'had a medical condition in their 80s',
+            'developed symptoms in their 90s',
+            'showed changes in their senior years',
+            'had health concerns in later life',
+            'experienced age-related changes',
+            'developed a condition over time',
+            'showed progressive symptoms',
+            'had multiple health factors',
+            'experienced combined conditions'
+        ],
+        'OCCUPATION': [
+            'professional services',
+            'administrative role',
+            'management position',
+            'technical specialist',
+            'advisory capacity',
+            'operational duties',
+            'strategic planning',
+            'service delivery',
+            'project coordination',
+            'organizational leadership'
+        ],
+        'CLINICAL_OBSERVATION': [
+            'standard findings noted',
+            'typical presentation observed',
+            'expected parameters recorded',
+            'routine assessment completed',
+            'normal range detected',
+            'baseline characteristics present',
+            'standard markers identified',
+            'regular patterns observed',
+            'consistent findings documented',
+            'expected variations noted'
+        ],
+        'MEDICAL_PROCEDURE': [
+            'standard evaluation discussed',
+            'routine assessment considered',
+            'optional testing reviewed',
+            'voluntary participation offered',
+            'research opportunity presented',
+            'diagnostic option explained',
+            'elective procedure mentioned',
+            'screening method discussed',
+            'investigative approach considered',
+            'clinical protocol reviewed'
+        ],
+        'DURATION': [
+            'several years',
+            'extended period',
+            'considerable time',
+            'lengthy duration',
+            'sustained timeframe',
+            'prolonged interval',
+            'significant span',
+            'substantial period',
+            'continuous duration',
+            'ongoing timeframe'
+        ],
+        'CAREGIVING_HISTORY': [
+            'provided family support',
+            'assisted with care needs',
+            'helped family member',
+            'supported relative',
+            'gave personal assistance',
+            'offered family care',
+            'provided home support',
+            'assisted with daily needs',
+            'helped with personal care',
+            'supported family situation'
         ]
     }
     
@@ -558,7 +636,10 @@ def generate_fake_data(entity_type: str) -> Tuple[str, str]:
     elif entity_type in ['DIAGNOSIS', 'ORGANIZATION', 'MEDICATION', 'MRN', 'PROVIDER_ID',
                         'INSURANCE_ID', 'LAB_VALUE', 'PROCEDURE', 'MEDICAL_CONDITION',
                         'CLINICAL_TRIAL_ID', 'JOB_TITLE', 'CLINICAL_NOTE', 'SLEEP_PATTERN',
-                        'PSYCHIATRIC_SYMPTOM', 'DAILY_ACTIVITY']:
+                        'PSYCHIATRIC_SYMPTOM', 'DAILY_ACTIVITY', 'NEUROPSYCH_SCORE',
+                        'CAREGIVER_SCORE', 'FAMILY_HISTORY', 'OCCUPATION',
+                        'CLINICAL_OBSERVATION', 'MEDICAL_PROCEDURE', 'DURATION',
+                        'CAREGIVING_HISTORY']:
         # Generate a random value to use as seed for consistent replacements
         random_value = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
         return 'non_medical_faker', generate_non_medical_replacement(entity_type, random_value)
@@ -596,7 +677,10 @@ def generate_fake_entities(masterid: str, entities: List[Dict], existing_records
             # For medical entities, use non-medical replacements
             if entity['Type'] in ['DIAGNOSIS', 'ORGANIZATION', 'MEDICATION', 'MRN', 
                                  'PROVIDER_ID', 'INSURANCE_ID', 'LAB_VALUE', 'PROCEDURE',
-                                 'MEDICAL_CONDITION', 'CLINICAL_TRIAL_ID']:
+                                 'MEDICAL_CONDITION', 'CLINICAL_TRIAL_ID', 'NEUROPSYCH_SCORE',
+                                 'CAREGIVER_SCORE', 'FAMILY_HISTORY', 'OCCUPATION',
+                                 'CLINICAL_OBSERVATION', 'MEDICAL_PROCEDURE', 'DURATION',
+                                 'CAREGIVING_HISTORY']:
                 generator_name = 'non_medical_faker'
                 fake_data = generate_non_medical_replacement(entity['Type'], entity['originalData'])
             else:
