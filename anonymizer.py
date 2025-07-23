@@ -130,7 +130,7 @@ def if_exists(records, pii_type, pii_data):
 
 
 def anonymize_profile(identity, identityType, profile, context=None):
-    """Enhanced profile anonymization with medical data support"""
+    """Enhanced profile anonymization - only anonymizes HIPAA identifiers"""
     print(f'Profile {type(profile)} - {profile}')
     try:
         masterid = get_piimaster_uuid(identity, identityType)
@@ -144,46 +144,11 @@ def anonymize_profile(identity, identityType, profile, context=None):
         anon_profile = {}
         records = []
         
-        # Medical profile fields that need special handling
-        medical_fields = {
-            'diagnosis': 'DIAGNOSIS',
-            'medications': 'MEDICATION',
-            'allergies': 'MEDICAL_CONDITION',
-            'medical_history': 'MEDICAL_CONDITION',
-            'chief_complaint': 'MEDICAL_CONDITION',
-            'lab_results': 'LAB_VALUE',
-            'vital_signs': 'LAB_VALUE',
-            'procedures': 'PROCEDURE',
-            'insurance_id': 'INSURANCE_ID',
-            'provider_npi': 'PROVIDER_ID'
-        }
-        
         for key, value in profile.items():
             fake_data = None
             if value != '' and value is not None:
-                # Check if this is a medical field
-                medical_type = None
-                for med_field, med_type in medical_fields.items():
-                    if med_field in key.lower():
-                        medical_type = med_type
-                        break
-                
-                if medical_type:
-                    # Handle medical data with non-medical replacements
-                    fake_data = if_exists(rows, medical_type, str(value))
-                    if fake_data is None:
-                        fake_data = if_exists(records, medical_type, str(value))
-                        if fake_data is None:
-                            fake_data = _generate_non_medical_fake_data(medical_type, str(value))
-                            fake_data_generator_name = 'Non_Medical_Handler'
-                            records.append({
-                                'uuid': masterid,
-                                'piiType': medical_type,
-                                'originalData': str(value),
-                                'fakeDataType': fake_data_generator_name,
-                                'fakeData': fake_data
-                            })
-                elif 'dob' in key or 'date of birth'.upper() in key.upper():
+                # Check for HIPAA identifiers in profile keys
+                if 'dob' in key.lower() or 'date of birth' in key.lower():
                     # HIPAA compliant date handling
                     fake_data = if_exists(rows, key, str(value))
                     if fake_data is None:
@@ -202,7 +167,7 @@ def anonymize_profile(identity, identityType, profile, context=None):
                                 'fakeDataType': 'HIPAA_Date_Handler',
                                 'fakeData': fake_data
                             })
-                elif 'zip' in key:
+                elif 'zip' in key.lower():
                     # HIPAA compliant ZIP handling
                     fake_data = if_exists(rows, key, str(value))
                     if fake_data is None:
@@ -221,37 +186,28 @@ def anonymize_profile(identity, identityType, profile, context=None):
                                 'fakeDataType': 'HIPAA_ZIP_Handler',
                                 'fakeData': fake_data
                             })
-                elif 'FIRST NAME' in key.upper():
-                    fake_data = if_exists(rows, 'NAME', str(value))
-                    if fake_data is None:
-                        fake_data = if_exists(records, 'NAME', str(value))
+                elif 'first name' in key.lower() or 'last name' in key.lower() or key.lower() == 'name':
+                    # Check if this is a provider name
+                    if 'provider' not in key.lower() and 'doctor' not in key.lower() and 'physician' not in key.lower():
+                        fake_data = if_exists(rows, 'NAME', str(value))
                         if fake_data is None:
-                            fake_data = _generate_non_medical_fake_data('NAME', str(value))
-                            tokens = fake_data.split(' ')
-                            fake_data = tokens[0]
-                            records.append({
-                                'uuid': masterid,
-                                'piiType': 'NAME',
-                                'originalData': str(value),
-                                'fakeDataType': 'Non_Medical_Handler',
-                                'fakeData': fake_data
-                            })
-                elif 'LAST NAME' in key.upper():
-                    fake_data = if_exists(rows, 'NAME', str(value))
-                    if fake_data is None:
-                        fake_data = if_exists(records, 'NAME', str(value))
-                        if fake_data is None:
-                            fake_data = _generate_non_medical_fake_data('NAME', str(value))
-                            tokens = fake_data.split(' ')
-                            fake_data = tokens[1] if len(tokens) > 1 else tokens[0]
-                            records.append({
-                                'uuid': masterid,
-                                'piiType': 'NAME',
-                                'originalData': str(value),
-                                'fakeDataType': 'Non_Medical_Handler',
-                                'fakeData': fake_data
-                            })
-                else:
+                            fake_data = if_exists(records, 'NAME', str(value))
+                            if fake_data is None:
+                                fake_data_generator_name, fake_data = generate_fake_data('NAME')
+                                if 'first name' in key.lower():
+                                    tokens = fake_data.split(' ')
+                                    fake_data = tokens[0]
+                                elif 'last name' in key.lower():
+                                    tokens = fake_data.split(' ')
+                                    fake_data = tokens[1] if len(tokens) > 1 else tokens[0]
+                                records.append({
+                                    'uuid': masterid,
+                                    'piiType': 'NAME',
+                                    'originalData': str(value),
+                                    'fakeDataType': fake_data_generator_name,
+                                    'fakeData': fake_data
+                                })
+                elif any(hipaa_key in key.lower() for hipaa_key in ['phone', 'email', 'ssn', 'mrn', 'insurance']):
                     # Use standard PII detection
                     entities = detect_pii_data(str(value))
                     if entities:
@@ -265,10 +221,6 @@ def anonymize_profile(identity, identityType, profile, context=None):
                                 if entity['Type'] == 'ADDRESS':
                                     fake_data = fake_data.replace('\n', ' ')
 
-                                if entity['Type'] == 'NAME':
-                                    tokens = fake_data.split(' ')
-                                    fake_data = tokens[0]
-
                                 records.append({
                                     'uuid': masterid,
                                     'piiType': entity['Type'],
@@ -276,6 +228,24 @@ def anonymize_profile(identity, identityType, profile, context=None):
                                     'fakeDataType': fake_data_generator_name,
                                     'fakeData': fake_data
                                 })
+                else:
+                    # For other fields, check if the value contains PII
+                    entities = detect_pii_data(str(value))
+                    if entities:
+                        entity = entities[0]
+                        fake_data = if_exists(rows, entity['Type'], str(entity['originalData']))
+                        if fake_data is None:
+                            fake_data = if_exists(records, entity['Type'], str(entity['originalData']))
+                            if fake_data is None:
+                                fake_data_generator_name, fake_data = generate_fake_data(entity['Type'])
+                                records.append({
+                                    'uuid': masterid,
+                                    'piiType': entity['Type'],
+                                    'originalData': entity['originalData'],
+                                    'fakeDataType': fake_data_generator_name,
+                                    'fakeData': fake_data
+                                })
+                    
             if fake_data is None:
                 fake_data = value
 
@@ -367,32 +337,6 @@ def de_anonymize_profile(identity, identityType, profile, context=None):
 def de_anonymizer(identity, identityType, conversation, context=None):
     """
     De-anonymizes a given conversation for a specific identity with HIPAA/GDPR compliance.
-
-    This function attempts to reverse the anonymization process on a conversation
-    by replacing fake data with the original PII (Personally Identifiable Information).
-
-    Args:
-        identity (str): The identifier for the entity (e.g., user ID, email).
-        identityType (str): The type of the identity (e.g., 'USER_ID', 'EMAIL').
-        conversation (str): The anonymized conversation text to be de-anonymized.
-        context (dict): Optional context for audit logging and access control
-
-    Returns:
-        dict: A dictionary containing:
-            - 'statusCode' (int): 200 for success, 500 for error.
-            - 'body' (str): A JSON string containing the de-anonymized conversation
-              or the original conversation if de-anonymization wasn't possible.
-            - 'error' (str): Description of the error if an exception occurred.
-
-    Raises:
-        Exception: Any exception that occurs during the de-anonymization process
-                   is caught and logged, returning a 500 status code.
-
-    Note:
-        - This function does not insert a new record if the identity doesn't exist.
-        - If no PII data is found for the given identity, the original conversation is returned.
-        - The de-anonymized conversation is stored in the database with the method 'DE-ANONYMIZE'.
-        - All access is logged for HIPAA compliance.
     """
     try:
         # GDPR access control check
@@ -401,15 +345,12 @@ def de_anonymizer(identity, identityType, conversation, context=None):
             pass
         
         result = None
-        # Retrieve the UUID associated with the given identity and identity type
-        # insert=False ensures no new record is created if the identity doesn't exist
         masterid = get_piimaster_uuid(identity, identityType, insert=False)
         
         # Log de-anonymization access
         log_phi_access(masterid, 'DE_ANONYMIZE', 'conversation', context)
 
         # Get PII Data stored for the User
-        # Retrieve all PII data records associated with the masterid
         rows = get_piientity_data(masterid)
         logger.debug(f"Rows for {identity}, {identityType}: {rows}")
         if rows:
@@ -455,6 +396,7 @@ def de_anonymizer(identity, identityType, conversation, context=None):
 def anonymize_json_simple(identity, identityType, json_data, context=None):
     """
     Simple JSON anonymization that preserves structure and order.
+    Only anonymizes HIPAA identifiers, preserves medical information.
     """
     try:
         if DEBUG_MODE:
@@ -563,7 +505,7 @@ def anonymize_json_simple(identity, identityType, json_data, context=None):
 def _anonymize_json_recursive_ordered(data, masterid, existing_rows, records=None):
     """
     Recursively anonymize JSON data while preserving structure and order.
-    Handles OrderedDict to maintain key order.
+    Only anonymizes HIPAA identifiers, preserves medical information.
     """
     if records is None:
         records = []
@@ -572,17 +514,29 @@ def _anonymize_json_recursive_ordered(data, masterid, existing_rows, records=Non
         # Use OrderedDict to preserve order
         anonymized = OrderedDict()
         for key, value in data.items():
-            # Always try to anonymize values in sensitive keys
-            if should_anonymize_key(key) or _contains_medical_content(value):
+            # Check if this key might contain HIPAA identifiers
+            if should_anonymize_key(key):
                 anonymized[key], new_records = _anonymize_value_comprehensive(
                     key, value, masterid, existing_rows, records
                 )
                 records.extend(new_records)
             else:
-                # Still check nested structures
-                anonymized[key], _ = _anonymize_json_recursive_ordered(
-                    value, masterid, existing_rows, records
-                )
+                # Still check nested structures and string values for PII
+                if isinstance(value, str):
+                    # Check if the string contains PII
+                    entities = detect_pii_data(value)
+                    if entities:
+                        anonymized[key], new_records = _anonymize_value_comprehensive(
+                            key, value, masterid, existing_rows, records
+                        )
+                        records.extend(new_records)
+                    else:
+                        anonymized[key] = value
+                else:
+                    # Recurse for nested structures
+                    anonymized[key], _ = _anonymize_json_recursive_ordered(
+                        value, masterid, existing_rows, records
+                    )
         return anonymized, records
         
     elif isinstance(data, list):
@@ -595,74 +549,14 @@ def _anonymize_json_recursive_ordered(data, masterid, existing_rows, records=Non
         return anonymized, records
         
     else:
-        # Check scalar values for PII/PHI
+        # Check scalar values for PII
         return _anonymize_scalar_value(data, masterid, existing_rows, records)
-
-
-def _contains_medical_content(value):
-    """
-    Check if a value contains medical/symptom content that should be anonymized.
-    """
-    if isinstance(value, str):
-        medical_terms = [
-            'sleep', 'nap', 'nightmare', 'snoring', 'cognitive', 'impairment',
-            'alzheimer', 'anxiety', 'depression', 'stress', 'symptom',
-            'difficulty', 'trouble', 'managing', 'finding', 'driving',
-            # Cognitive assessment terms
-            'memory', 'fluency', 'language', 'visuospatial', 'attention',
-            'orientation', 'score', 'total', 'performance',
-            # Neuropsychiatric terms
-            'apathy', 'distress', 'caregiver', 'mood', 'psychosis',
-            'tremor', 'speech', 'insight', 'alert', 'responsive',
-            # Family history and clinical terms
-            'diagnosed', 'dementia', 'vascular', 'frontotemporal',
-            'lumbar', 'puncture', 'procedure', 'research', 'clinical',
-            # Employment and caregiving
-            'retired', 'occupation', 'carer', 'council', 'policy',
-            'survey', 'statistical', 'meeting', 'employment'
-        ]
-        value_lower = value.lower()
-        
-        # Check for score patterns (e.g., "25/26", "98/100", "4.42")
-        score_patterns = [
-            r'\d+/\d+',  # Fraction scores like "25/26"
-            r'^\d+(\.\d+)?$',  # Decimal scores like "4.42" or whole numbers like "35"
-        ]
-        
-        for pattern in score_patterns:
-            if re.match(pattern, value.strip()):
-                return True
-        
-        # Check for clinical observation patterns
-        clinical_patterns = [
-            r'no signs of',
-            r'was normal',
-            r'good insight',
-            r'fully alert',
-            r'normal .* movements',
-            r'no .* observed',
-            r'reportedly stable',
-            r'occasionally struggled'
-        ]
-        
-        for pattern in clinical_patterns:
-            if re.search(pattern, value_lower):
-                return True
-                
-        return any(term in value_lower for term in medical_terms)
-    elif isinstance(value, list):
-        return any(_contains_medical_content(item) for item in value)
-    elif isinstance(value, dict):
-        return any(_contains_medical_content(v) for v in value.values())
-    elif isinstance(value, (int, float)):
-        # Numeric values in medical contexts should be anonymized
-        return True
-    return False
 
 
 def _anonymize_value_comprehensive(key, value, masterid, existing_rows, records):
     """
-    Comprehensively anonymize a value, checking both key context and content.
+    Anonymize a value based on detected PII.
+    Only anonymizes HIPAA identifiers.
     """
     if value is None or value == '':
         return value, []
@@ -677,27 +571,31 @@ def _anonymize_value_comprehensive(key, value, masterid, existing_rows, records)
                 anon_item, _ = _anonymize_json_recursive_ordered(item, masterid, existing_rows, records)
                 anonymized_list.append(anon_item)
             elif isinstance(item, str) and item:
-                # Always anonymize string items in medical contexts
-                if _contains_medical_content(item) or should_anonymize_key(key):
-                    pii_type = determine_pii_type_from_content(key, item)
-                    
-                    fake_data = if_exists(existing_rows, pii_type, str(item))
-                    if not fake_data:
-                        fake_data = if_exists(records, pii_type, str(item))
+                # Check if the string contains PII
+                entities = detect_pii_data(item)
+                if entities:
+                    # Anonymize detected entities
+                    anonymized_item = item
+                    for entity in entities:
+                        fake_data = if_exists(existing_rows, entity['Type'], entity['originalData'])
                         if not fake_data:
-                            fake_data = _generate_non_medical_fake_data(pii_type, str(item))
-                            
-                            new_record = {
-                                'uuid': masterid,
-                                'piiType': pii_type,
-                                'originalData': str(item),
-                                'fakeDataType': 'Non_Medical_Handler',
-                                'fakeData': fake_data
-                            }
-                            if not _record_exists(new_record, records):
-                                new_records.append(new_record)
+                            fake_data = if_exists(records, entity['Type'], entity['originalData'])
+                            if not fake_data:
+                                generator_name, fake_data = generate_fake_data(entity['Type'])
+                                
+                                new_record = {
+                                    'uuid': masterid,
+                                    'piiType': entity['Type'],
+                                    'originalData': entity['originalData'],
+                                    'fakeDataType': generator_name,
+                                    'fakeData': fake_data
+                                }
+                                if not _record_exists(new_record, records):
+                                    new_records.append(new_record)
+                        
+                        anonymized_item = anonymized_item.replace(entity['originalData'], fake_data)
                     
-                    anonymized_list.append(fake_data)
+                    anonymized_list.append(anonymized_item)
                 else:
                     anonymized_list.append(item)
             else:
@@ -710,191 +608,115 @@ def _anonymize_value_comprehensive(key, value, masterid, existing_rows, records)
     
     # Handle scalar values
     if isinstance(value, str) and value:
-        # Check if the value itself contains medical content
-        if _contains_medical_content(value) or should_anonymize_key(key):
-            pii_type = determine_pii_type_from_content(key, value)
-            
-            fake_data = if_exists(existing_rows, pii_type, value)
-            if not fake_data:
-                fake_data = if_exists(records, pii_type, value)
+        # Detect PII in the string
+        entities = detect_pii_data(value)
+        if entities:
+            anonymized_value = value
+            for entity in entities:
+                fake_data = if_exists(existing_rows, entity['Type'], entity['originalData'])
                 if not fake_data:
-                    if pii_type == 'DATE':
-                        fake_data = anonymize_date_hipaa(value)
-                        fake_data_generator = 'HIPAA_Date_Handler'
-                    else:
-                        fake_data = _generate_non_medical_fake_data(pii_type, value)
-                        fake_data_generator = 'Non_Medical_Handler'
-                    
-                    new_record = {
-                        'uuid': masterid,
-                        'piiType': pii_type,
-                        'originalData': value,
-                        'fakeDataType': fake_data_generator,
-                        'fakeData': fake_data
-                    }
-                    if not _record_exists(new_record, records):
-                        new_records.append(new_record)
+                    fake_data = if_exists(records, entity['Type'], entity['originalData'])
+                    if not fake_data:
+                        if entity['Type'] == 'DATE':
+                            fake_data = anonymize_date_hipaa(entity['originalData'])
+                            fake_data_generator = 'HIPAA_Date_Handler'
+                        else:
+                            fake_data_generator, fake_data = generate_fake_data(entity['Type'])
+                        
+                        new_record = {
+                            'uuid': masterid,
+                            'piiType': entity['Type'],
+                            'originalData': entity['originalData'],
+                            'fakeDataType': fake_data_generator,
+                            'fakeData': fake_data
+                        }
+                        if not _record_exists(new_record, records):
+                            new_records.append(new_record)
+                
+                anonymized_value = anonymized_value.replace(entity['originalData'], fake_data)
             
-            return fake_data, new_records
+            return anonymized_value, new_records
     
-    # Handle numeric values (scores)
-    elif isinstance(value, (int, float)):
-        # Check if this is a medical score based on the key
-        if should_anonymize_key(key) or _contains_medical_content(value):
-            pii_type = determine_pii_type_from_content(key, str(value))
-            
-            fake_data = if_exists(existing_rows, pii_type, str(value))
-            if not fake_data:
-                fake_data = if_exists(records, pii_type, str(value))
-                if not fake_data:
-                    fake_data = _generate_non_medical_fake_data(pii_type, str(value))
-                    
-                    new_record = {
-                        'uuid': masterid,
-                        'piiType': pii_type,
-                        'originalData': str(value),
-                        'fakeDataType': 'Non_Medical_Handler',
-                        'fakeData': fake_data
-                    }
-                    if not _record_exists(new_record, records):
-                        new_records.append(new_record)
-            
-            # Return the appropriate type
-            if '/' in fake_data:
-                return fake_data, new_records
-            elif '.' in fake_data:
-                try:
-                    return float(fake_data), new_records
-                except:
-                    return fake_data, new_records
-            else:
-                try:
-                    return int(fake_data), new_records
-                except:
-                    return fake_data, new_records
-    
-    # Return non-string values as-is
+    # Return non-string values as-is (including medical scores/values)
     return value, new_records
 
 
 def _anonymize_scalar_value(value, masterid, existing_rows, records):
     """
-    Anonymize a scalar value if it contains medical content.
+    Anonymize a scalar value if it contains HIPAA identifiers.
     """
     if value is None or value == '' or isinstance(value, (int, float, bool)):
         return value, []
         
-    # Convert to string and check for medical content
-    str_value = str(value)
-    if _contains_medical_content(str_value):
-        # Determine the type based on content
-        if any(term in str_value.lower() for term in 
-               ['atrophy', 'hypometabolism', 'ischemic', 'neurodegenerative', 'cerebral', 
-                'cortex', 'hippocampal', 'microvascular', 'volume loss']):
-            pii_type = 'BRAIN_SCAN_RESULT'
-        else:
-            pii_type = 'MEDICAL_CONDITION'
-        
-        fake_data = if_exists(existing_rows, pii_type, str_value)
-        if not fake_data:
-            fake_data = if_exists(records, pii_type, str_value)
-            if not fake_data:
-                fake_data = _generate_non_medical_fake_data(pii_type, str_value)
-                
-                new_record = {
-                    'uuid': masterid,
-                    'piiType': pii_type,
-                    'originalData': str_value,
-                    'fakeDataType': 'Non_Medical_Handler',
-                    'fakeData': fake_data
-                }
-                records.append(new_record)
-        
-        return fake_data, []
+    # Check if the string contains PII
+    entities = detect_pii_data(str(value))
     
-    return value, []
+    if not entities:
+        return value, []
+        
+    # Anonymize detected entities
+    anonymized_value = str(value)
+    new_records = []
+    
+    for entity in entities:
+        fake_data = if_exists(existing_rows, entity['Type'], entity['originalData'])
+        if fake_data is None:
+            fake_data = if_exists(records, entity['Type'], entity['originalData'])
+            if fake_data is None:
+                generator_name, fake_data = generate_fake_data(entity['Type'])
+                    
+                new_records.append({
+                    'uuid': masterid,
+                    'piiType': entity['Type'],
+                    'originalData': entity['originalData'],
+                    'fakeDataType': generator_name,
+                    'fakeData': fake_data
+                })
+        
+        anonymized_value = anonymized_value.replace(entity['originalData'], fake_data)
+    
+    return anonymized_value, new_records
 
 
 def determine_pii_type_from_content(key, value):
     """
     Determine PII type from both key and value content.
-    Enhanced to better categorize medical content including cognitive scores.
+    Only returns types for HIPAA identifiers.
     """
     key_lower = key.lower()
     value_lower = value.lower() if isinstance(value, str) else ''
     
-    # Neuropsychiatric inventory scores
-    if any(term in key_lower for term in ['neuropsychiatric', 'inventory', 'npi']):
-        return 'NEUROPSYCH_SCORE'
-    
-    # Caregiver distress scores
-    elif 'caregiver_distress' in key_lower or 'distress' in key_lower:
-        return 'CAREGIVER_SCORE'
-    
-    # Family history
-    elif any(term in key_lower for term in ['family_history', 'father', 'mother']) and \
-         any(term in value_lower for term in ['alzheimer', 'dementia', 'diagnosed']):
-        return 'FAMILY_HISTORY'
-    
-    # Employment and occupation
-    elif any(term in key_lower for term in ['employment', 'occupation', 'previous_occupation']):
-        return 'OCCUPATION'
-    
-    # Clinical observations
-    elif 'clinical_observation' in key_lower or \
-         any(term in value_lower for term in ['no signs of', 'was normal', 'good insight', 
-                                              'fully alert', 'no tremors', 'mood was']):
-        return 'CLINICAL_OBSERVATION'
-    
-    # Lumbar puncture and procedures
-    elif any(term in key_lower for term in ['lumbar_puncture', 'procedure']) or \
-         any(term in value_lower for term in ['lumbar puncture', 'routine procedure']):
-        return 'MEDICAL_PROCEDURE'
-    
-    # Symptom duration
-    elif 'symptom_duration' in key_lower or 'duration' in key_lower:
-        return 'DURATION'
-    
-    # Caregiving history
-    elif 'caregiving' in key_lower or 'carer' in value_lower:
-        return 'CAREGIVING_HISTORY'
-        
-    # Cognitive assessment scores
-    elif any(term in key_lower for term in ['aiadl', 'smmse', 'iqcode', 'ace_iii', 'ace-iii', 'moca', 'mmse',
-                                          'memory', 'fluency', 'language', 'visuospatial', 'attention', 
-                                          'orientation', 'total', 'score', 'domain_performance']):
-        return 'COGNITIVE_SCORE'
-    
-    # Check if value looks like a score (numeric, fraction, or decimal)
-    elif isinstance(value, (int, float)) or (isinstance(value, str) and re.match(r'^\d+(/\d+)?(\.\d+)?$', value.strip())):
-        # If the key suggests it's a cognitive/medical score
-        if any(term in key_lower for term in ['score', 'total', 'performance', 'test', 'assessment']):
-            return 'COGNITIVE_SCORE'
-    
-    # Brain scan results
-    elif any(term in key_lower for term in ['brain_scan', 'ct_scan', 'mri_scan', 'pet_scan']) or \
-         any(term in value_lower for term in ['atrophy', 'hypometabolism', 'ischemic', 'neurodegenerative']):
-        return 'BRAIN_SCAN_RESULT'
-    
-    # Sleep-related content
-    elif 'sleep' in key_lower or any(term in value_lower for term in ['sleep', 'nap', 'nightmare', 'snoring', 'insomnia']):
-        return 'SLEEP_PATTERN'
-    
-    # Cognitive challenges
-    elif 'cognitive' in key_lower or any(term in value_lower for term in ['cognitive', 'alzheimer', 'dementia', 'memory']):
-        return 'DIAGNOSIS'
-    
-    # Psychiatric symptoms
-    elif any(term in key_lower for term in ['psychiatric', 'neuropsychiatric']) or \
-         any(term in value_lower for term in ['anxiety', 'depression', 'delusion', 'hallucination', 'agitation']):
-        return 'PSYCHIATRIC_SYMPTOM'
-    
-    # Daily living activities
-    elif 'activities' in key_lower or 'living' in key_lower or \
-         any(term in value_lower for term in ['driving', 'managing', 'difficulty', 'trouble']):
-        return 'DAILY_ACTIVITY'
-    
-    # Use the original function for other cases
+    # HIPAA identifiers only
+    if 'name' in key_lower and 'provider' not in key_lower and 'doctor' not in key_lower:
+        return 'NAME'
+    elif any(x in key_lower for x in ['phone', 'tel', 'mobile', 'cell', 'fax']):
+        return 'PHONE_NUMBER'
+    elif 'email' in key_lower:
+        return 'EMAIL'
+    elif 'address' in key_lower:
+        return 'ADDRESS'
+    elif any(x in key_lower for x in ['ssn', 'social']):
+        return 'SSN'
+    elif any(x in key_lower for x in ['mrn', 'medical_record', 'patient_id']):
+        return 'MRN'
+    elif 'date' in key_lower or 'dob' in key_lower:
+        return 'DATE'
+    elif 'zip' in key_lower:
+        return 'ZIP'
+    elif any(x in key_lower for x in ['insurance', 'member', 'policy']):
+        return 'INSURANCE_ID'
+    elif any(x in key_lower for x in ['license', 'certificate']):
+        return 'LICENSE_NUMBER'
+    elif any(x in key_lower for x in ['device', 'serial']):
+        return 'DEVICE_ID'
+    elif 'url' in key_lower or 'website' in key_lower:
+        return 'URL'
+    elif 'ip' in key_lower and 'address' in key_lower:
+        return 'IP_ADDRESS'
+    elif any(x in key_lower for x in ['employee_id', 'eid', 'staff_id']):
+        return 'EMPLOYEE_ID'
+    elif 'trial' in key_lower and any(x in value_lower for x in ['nct', 'clinical']):
+        return 'CLINICAL_TRIAL_ID'
     else:
         return determine_pii_type_from_key(key)
 
@@ -1099,428 +921,17 @@ def _de_anonymize_json_recursive(data, rows):
             return data
 
 
-def _anonymize_scalar(value, masterid, existing_rows, records):
-    """
-    Anonymize a scalar value by detecting PII.
-    Enhanced to use non-medical replacements.
-    """
-    if value is None or value == '' or isinstance(value, (int, float, bool)):
-        return value, []
-        
-    # Detect PII in the value
-    entities = detect_pii_data(str(value))
-    
-    if not entities:
-        return value, []
-        
-    # Anonymize detected entities
-    anonymized_value = str(value)
-    new_records = []
-    
-    for entity in entities:
-        fake_data = if_exists(existing_rows, entity['Type'], entity['originalData'])
-        if fake_data is None:
-            fake_data = if_exists(records, entity['Type'], entity['originalData'])
-            if fake_data is None:
-                # Use non-medical fake data generator
-                fake_data = _generate_non_medical_fake_data(entity['Type'], entity['originalData'])
-                fake_data_generator = 'Non_Medical_Handler'
-                    
-                new_records.append({
-                    'uuid': masterid,
-                    'piiType': entity['Type'],
-                    'originalData': entity['originalData'],
-                    'fakeDataType': fake_data_generator,
-                    'fakeData': fake_data
-                })
-        
-        anonymized_value = anonymized_value.replace(entity['originalData'], fake_data)
-    
-    return anonymized_value, new_records
-
-
-def _generate_non_medical_fake_data(pii_type, original_value):
-    """
-    Generate non-medical fake data for medical entities.
-    Uses hash of original value for consistent replacements.
-    Returns generic, non-medical terms that don't reveal the nature of the data.
-    """
-    import string
-    
-    # Use hash of original value to get consistent fake data
-    hash_val = int(hashlib.md5(original_value.encode()).hexdigest()[:8], 16)
-    
-    # Non-medical replacement sets organized by category
-    non_medical_replacements = {
-        'DIAGNOSIS': [
-            'Blue Mountain Project',
-            'Sunrise Initiative',
-            'Green Valley Protocol',
-            'Ocean Wave Study',
-            'Silver Bridge Program',
-            'Golden Gate Analysis',
-            'Crystal River Method',
-            'Desert Sand Framework',
-            'Northern Light Process',
-            'Eastern Shore Approach',
-            'Maple Leaf System',
-            'Thunder Bay Model',
-            'Moonlight Strategy',
-            'Starlight Pattern',
-            'Rainbow Arc Design'
-        ],
-        'NEUROPSYCH_SCORE': [
-            '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'
-        ],
-        'CAREGIVER_SCORE': [
-            '1', '2', '3', '4', '5'
-        ],
-        'FAMILY_HISTORY': [
-            'experienced a health event in their 70s',
-            'had a medical condition in their 80s',
-            'developed symptoms in their 90s',
-            'showed changes in their senior years',
-            'had health concerns in later life',
-            'experienced age-related changes',
-            'developed a condition over time',
-            'showed progressive symptoms',
-            'had multiple health factors',
-            'experienced combined conditions'
-        ],
-        'OCCUPATION': [
-            'professional services',
-            'administrative role',
-            'management position',
-            'technical specialist',
-            'advisory capacity',
-            'operational duties',
-            'strategic planning',
-            'service delivery',
-            'project coordination',
-            'organizational leadership'
-        ],
-        'CLINICAL_OBSERVATION': [
-            'standard findings noted',
-            'typical presentation observed',
-            'expected parameters recorded',
-            'routine assessment completed',
-            'normal range detected',
-            'baseline characteristics present',
-            'standard markers identified',
-            'regular patterns observed',
-            'consistent findings documented',
-            'expected variations noted'
-        ],
-        'MEDICAL_PROCEDURE': [
-            'standard evaluation discussed',
-            'routine assessment considered',
-            'optional testing reviewed',
-            'voluntary participation offered',
-            'research opportunity presented',
-            'diagnostic option explained',
-            'elective procedure mentioned',
-            'screening method discussed',
-            'investigative approach considered',
-            'clinical protocol reviewed'
-        ],
-        'DURATION': [
-            'several years',
-            'extended period',
-            'considerable time',
-            'lengthy duration',
-            'sustained timeframe',
-            'prolonged interval',
-            'significant span',
-            'substantial period',
-            'continuous duration',
-            'ongoing timeframe'
-        ],
-        'CAREGIVING_HISTORY': [
-            'provided family support',
-            'assisted with care needs',
-            'helped family member',
-            'supported relative',
-            'gave personal assistance',
-            'offered family care',
-            'provided home support',
-            'assisted with daily needs',
-            'helped with personal care',
-            'supported family situation'
-        ],
-        'ORGANIZATION': [
-            'Alpine Resources Center',
-            'Riverside Associates',
-            'Oakwood Services',
-            'Pinehurst Group',
-            'Lakeside Institute',
-            'Mountain View Partners',
-            'Valley Stream Corp',
-            'Oceanside Enterprises',
-            'Hillcrest Solutions',
-            'Meadowbrook Systems',
-            'Northwind Analytics',
-            'Southgate Dynamics',
-            'Eastside Innovations',
-            'Westfield Operations',
-            'Central Park Agency'
-        ],
-        'JOB_TITLE': [
-            'Senior Analyst',
-            'Project Coordinator',
-            'Operations Manager',
-            'Technical Lead',
-            'Research Associate',
-            'Quality Specialist',
-            'Systems Administrator',
-            'Program Director',
-            'Data Architect',
-            'Process Engineer',
-            'Strategic Consultant',
-            'Regional Supervisor',
-            'Implementation Expert',
-            'Solutions Designer',
-            'Integration Specialist'
-        ],
-        'CLINICAL_NOTE': [
-            'standard review completed',
-            'routine evaluation performed',
-            'scheduled assessment done',
-            'periodic check finished',
-            'regular inspection conducted',
-            'systematic review executed',
-            'comprehensive analysis completed',
-            'detailed examination performed',
-            'thorough investigation done',
-            'methodical survey finished'
-        ],
-        'SLEEP_PATTERN': [
-            'Pattern Alpha-7',
-            'Sequence Beta-3',
-            'Rhythm Gamma-1',
-            'Cycle Delta-9',
-            'Phase Epsilon-4',
-            'Mode Zeta-2',
-            'State Eta-8',
-            'Form Theta-5',
-            'Type Iota-6',
-            'Configuration Kappa-0'
-        ],
-        'PSYCHIATRIC_SYMPTOM': [
-            'Status Green-Active',
-            'Condition Blue-Stable',
-            'State Yellow-Monitored',
-            'Phase Orange-Tracked',
-            'Level Purple-Observed',
-            'Mode Teal-Recorded',
-            'Type Silver-Noted',
-            'Form Gold-Documented',
-            'Pattern Bronze-Logged',
-            'Configuration Gray-Filed'
-        ],
-        'DAILY_ACTIVITY': [
-            'Process Type A1',
-            'Method Category B2',
-            'Approach Level C3',
-            'System Grade D4',
-            'Protocol Class E5',
-            'Procedure Rank F6',
-            'Operation Tier G7',
-            'Function Stage H8',
-            'Activity Phase I9',
-            'Task Mode J0'
-        ],
-        'MEDICAL_CONDITION': [
-            'Factor X-12',
-            'Element Y-34',
-            'Component Z-56',
-            'Variable W-78',
-            'Parameter V-90',
-            'Attribute U-21',
-            'Property T-43',
-            'Feature S-65',
-            'Characteristic R-87',
-            'Aspect Q-09'
-        ],
-        'MEDICATION': [
-            'Product Code A1B2',
-            'Item Number C3D4',
-            'Reference ID E5F6',
-            'Catalog Entry G7H8',
-            'Stock Code I9J0',
-            'Asset Tag K1L2',
-            'Inventory ID M3N4',
-            'Serial Code O5P6',
-            'Batch Number Q7R8',
-            'Lot Reference S9T0'
-        ],
-        'PROCEDURE': [
-            'Process 100-A',
-            'Method 200-B',
-            'Technique 300-C',
-            'Protocol 400-D',
-            'Operation 500-E',
-            'Function 600-F',
-            'Activity 700-G',
-            'Task 800-H',
-            'Action 900-I',
-            'Step 1000-J'
-        ],
-        'LAB_VALUE': [
-            'Metric A: 42.7',
-            'Index B: 3.14',
-            'Score C: 98.6',
-            'Value D: 7.25',
-            'Reading E: 120',
-            'Result F: 0.85',
-            'Output G: 15.3',
-            'Level H: 6.02',
-            'Rate I: 72.0',
-            'Factor J: 1.618'
-        ],
-        'COGNITIVE_SCORE': [
-            '85',
-            '92',
-            '78',
-            '95/100',
-            '28/30',
-            '3.85',
-            '4.12',
-            '23/26',
-            '12/14',
-            '24/26',
-            '15/16',
-            '17/18',
-            '88/100',
-            '31',
-            '4.55'
-        ],
-        'BRAIN_SCAN_RESULT': [
-            'Unremarkable findings with no acute abnormalities',
-            'Mild age-appropriate changes noted',
-            'Small vessel changes consistent with chronic processes',
-            'Minimal white matter signal alterations',
-            'Stable appearance compared to prior studies',
-            'No significant interval changes identified',
-            'Scattered foci of signal intensity variation',
-            'Nonspecific findings requiring clinical correlation',
-            'Mild volume changes in select regions',
-            'Pattern consistent with expected variations',
-            'Signal characteristics within normal limits for age',
-            'No acute territorial changes observed',
-            'Symmetric appearance of bilateral structures',
-            'Minimal periventricular signal changes',
-            'Findings suggest chronic stable process'
-        ]
-    }
-    
-    # Special handling for NAME type - use colors + objects
-    if pii_type == 'NAME':
-        colors = ['Blue', 'Green', 'Red', 'Silver', 'Golden', 'Crystal', 
-                 'Amber', 'Violet', 'Crimson', 'Azure', 'Indigo', 'Coral']
-        objects = ['River', 'Mountain', 'Valley', 'Forest', 'Ocean', 'Desert', 
-                  'Meadow', 'Canyon', 'Prairie', 'Glacier', 'Plateau', 'Ridge']
-        
-        # Use hash to select consistent names
-        color = colors[hash_val % len(colors)]
-        obj = objects[(hash_val >> 8) % len(objects)]
-        
-        # Check if original has a title
-        if any(title in original_value for title in ['Dr.', 'Professor', 'Mr.', 'Mrs.', 'Ms.']):
-            return f"Specialist {color} {obj}"
-        else:
-            return f"{color} {obj}"
-    
-    # Get the appropriate replacement list
-    if pii_type in non_medical_replacements:
-        options = non_medical_replacements[pii_type]
-        # Use hash to select consistent option
-        return options[hash_val % len(options)]
-    
-    # For any other type, use a generic code
-    return f"Code-{pii_type[:3]}-{hash_val % 10000:04d}"
-
-
 def determine_pii_type_from_key(key):
     """
     Determine the PII type based on the key name.
-    Enhanced with more specific mappings including cognitive assessments and brain scans.
+    Only returns types for HIPAA identifiers.
     """
     key_lower = key.lower()
     
-    # Check for brain imaging first
-    if any(x in key_lower for x in ['ct_scan', 'mri_scan', 'pet_scan', 'brain_scan', 'imaging', 'radiology']):
-        return 'BRAIN_SCAN_RESULT'
-    
-    # Neuropsychiatric inventory
-    elif any(x in key_lower for x in ['neuropsychiatric', 'inventory', 'npi']):
-        return 'NEUROPSYCH_SCORE'
-    
-    # Caregiver distress
-    elif 'caregiver_distress' in key_lower or ('caregiver' in key_lower and 'distress' in key_lower):
-        return 'CAREGIVER_SCORE'
-    
-    # Family history
-    elif any(x in key_lower for x in ['family_history', 'father', 'mother', 'parent']):
-        return 'FAMILY_HISTORY'
-    
-    # Employment and occupation
-    elif any(x in key_lower for x in ['employment', 'employment_status', 'occupation', 'previous_occupation']):
-        return 'OCCUPATION'
-    
-    # Clinical observations
-    elif any(x in key_lower for x in ['clinical_observation', 'observation']):
-        return 'CLINICAL_OBSERVATION'
-    
-    # Lumbar puncture and procedures
-    elif any(x in key_lower for x in ['lumbar_puncture', 'procedure']):
-        return 'MEDICAL_PROCEDURE'
-    
-    # Symptom duration
-    elif 'symptom_duration' in key_lower or 'duration' in key_lower:
-        return 'DURATION'
-    
-    # Caregiving history
-    elif 'caregiving_history' in key_lower or 'caregiving' in key_lower:
-        return 'CAREGIVING_HISTORY'
-    
-    # Team discussion
-    elif any(x in key_lower for x in ['team_discussion', 'bhc_team', 'discussion']):
-        return 'CLINICAL_NOTE'
-    
-    # Check for cognitive assessment scores
-    elif any(x in key_lower for x in ['aiadl', 'smmse', 'iqcode', 'ace_iii', 'ace-iii', 'moca', 'mmse',
-                                    'memory', 'fluency', 'language', 'visuospatial', 'attention', 
-                                    'orientation', 'total', 'score', 'domain_performance']):
-        return 'COGNITIVE_SCORE'
-    # Check for specific patterns
-    elif any(x in key_lower for x in ['clinic_name', 'hospital', 'facility', 'service', 'center']):
-        return 'ORGANIZATION'
-    elif any(x in key_lower for x in ['provider', 'doctor', 'physician', 'referring', 'clinician', 
-                                      'consultant', 'psychiatrist', 'psychologist', 'therapist']):
+    # HIPAA identifiers only
+    if 'name' in key_lower and 'provider' not in key_lower and 'doctor' not in key_lower and 'physician' not in key_lower:
         return 'NAME'
-    elif 'name' in key_lower and 'clinic' not in key_lower:  # Just "name" but not "clinic_name"
-        return 'NAME'
-    elif 'role' in key_lower:
-        return 'JOB_TITLE'
-    elif 'date' in key_lower:
-        return 'DATE'
-    elif any(x in key_lower for x in ['diagnosis', 'condition', 'disorder', 'syndrome', 
-                                      'disease', 'illness', 'impairment']):
-        return 'DIAGNOSIS'
-    elif 'challenge' in key_lower and 'cognitive' in key_lower:
-        return 'DIAGNOSIS'  # Cognitive challenges are diagnoses
-    elif 'sleep' in key_lower and 'pattern' in key_lower:
-        return 'SLEEP_PATTERN'
-    elif any(x in key_lower for x in ['anxiety', 'depression', 'delusion', 'hallucination',
-                                      'apathy', 'agitation', 'irritability']):
-        return 'PSYCHIATRIC_SYMPTOM'
-    elif 'symptom' in key_lower:
-        return 'MEDICAL_CONDITION'
-    elif any(x in key_lower for x in ['activities', 'living', 'laundry', 'shopping',
-                                      'housekeeping', 'communication', 'transportation',
-                                      'food_preparation', 'managing_finances', 'managing_medications']):
-        return 'DAILY_ACTIVITY'
-    elif any(x in key_lower for x in ['phone', 'tel', 'mobile', 'cell']):
+    elif any(x in key_lower for x in ['phone', 'tel', 'mobile', 'cell', 'fax']):
         return 'PHONE_NUMBER'
     elif 'email' in key_lower:
         return 'EMAIL'
@@ -1530,8 +941,28 @@ def determine_pii_type_from_key(key):
         return 'SSN'
     elif any(x in key_lower for x in ['mrn', 'medical_record', 'patient_id']):
         return 'MRN'
-    elif 'reason' in key_lower:
-        return 'CLINICAL_NOTE'
+    elif 'date' in key_lower or 'dob' in key_lower or 'birth' in key_lower:
+        return 'DATE'
+    elif 'zip' in key_lower:
+        return 'ZIP'
+    elif any(x in key_lower for x in ['insurance', 'member', 'policy', 'beneficiary']):
+        return 'INSURANCE_ID'
+    elif any(x in key_lower for x in ['license', 'certificate']):
+        return 'LICENSE_NUMBER'
+    elif any(x in key_lower for x in ['device', 'serial', 'implant']):
+        return 'DEVICE_ID'
+    elif 'url' in key_lower or 'website' in key_lower:
+        return 'URL'
+    elif 'ip' in key_lower and 'address' in key_lower:
+        return 'IP_ADDRESS'
+    elif any(x in key_lower for x in ['employee_id', 'eid', 'staff_id']):
+        return 'EMPLOYEE_ID'
+    elif any(x in key_lower for x in ['vehicle', 'vin', 'plate']):
+        return 'VEHICLE_ID'
+    elif any(x in key_lower for x in ['fingerprint', 'retinal', 'voiceprint', 'biometric']):
+        return 'BIOMETRIC_ID'
+    elif 'trial' in key_lower:
+        return 'CLINICAL_TRIAL_ID'
     else:
         return 'OTHER'
 
@@ -1565,56 +996,39 @@ def anonymize_date_hipaa(date_str):
 
 def should_anonymize_key(key):
     """
-    Determine if a key likely contains PII/PHI based on its name.
-    Enhanced to catch more medical fields including cognitive assessments and brain scans.
+    Determine if a key likely contains HIPAA identifiers based on its name.
+    Only returns True for keys that might contain the 18 HIPAA identifiers.
     """
-    pii_keywords = [
-        'name', 'clinic_name', 'provider', 'doctor', 'physician',
-        'date', 'dob', 'birth', 'address', 'phone', 'email',
-        'ssn', 'mrn', 'id', 'diagnosis', 'medication', 
-        'referring_provider', 'clinic', 'hospital', 'service',
-        'clinician', 'consultant', 'psychiatrist', 'psychologist',
-        'therapist', 'counselor', 'nurse', 'role', 'reason',
-        'note', 'comment', 'description', 'summary',
-        # Medical symptom keywords
-        'symptom', 'symptoms', 'challenge', 'challenges',
-        'pattern', 'patterns', 'condition', 'conditions',
-        'disorder', 'disorders', 'impairment', 'disease',
-        'syndrome', 'illness', 'ailment', 'complaint',
-        'anxiety', 'depression', 'delusion', 'hallucination',
-        'apathy', 'agitation', 'irritability',
-        # Daily living activities
-        'activities', 'living', 'laundry', 'shopping',
-        'housekeeping', 'communication', 'transportation',
-        'food_preparation', 'managing_finances', 'managing_medications',
-        # Cognitive assessment keywords
-        'aiadl', 'smmse', 'iqcode', 'ace_iii', 'ace-iii', 'moca', 'mmse',
-        'memory', 'fluency', 'language', 'visuospatial', 'attention', 'orientation',
-        'cognitive', 'score', 'total', 'domain_performance', 'assessment',
-        'examination', 'test', 'screening', 'evaluation',
-        # Brain imaging keywords
-        'brain_scan', 'brain_scans', 'ct_scan', 'mri_scan', 'pet_scan', 
-        'imaging', 'radiology', 'scan', 'findings', 'impression',
-        'atrophy', 'hypometabolism', 'ischemic', 'neurodegenerative',
-        # New keywords for neuropsychiatric inventory
-        'neuropsychiatric', 'inventory', 'npi', 'caregiver', 'distress',
-        'family_history', 'father', 'mother', 'parent',
-        'symptom_duration', 'duration', 'employment', 'occupation',
-        'caregiving', 'carer', 'lumbar_puncture', 'procedure',
-        'clinical_observation', 'observation', 'mood', 'psychosis',
-        'tremor', 'speech', 'insight', 'alert', 'responsive',
-        'bhc_team', 'team_discussion', 'discussion'
+    hipaa_keywords = [
+        # Names (but not provider names)
+        'patient_name', 'name', 'first_name', 'last_name', 'middle_name',
+        'relative', 'mother', 'father', 'spouse', 'employer',
+        # Geographic
+        'address', 'street', 'city', 'state', 'zip', 'zipcode', 'location',
+        # Dates
+        'date', 'dob', 'birth', 'admission', 'discharge', 'death',
+        # Contact info
+        'phone', 'telephone', 'mobile', 'cell', 'fax', 'email',
+        # IDs
+        'ssn', 'social', 'mrn', 'medical_record', 'patient_id',
+        'insurance', 'member', 'policy', 'beneficiary',
+        'license', 'certificate', 'employee_id', 'staff_id',
+        # Technical
+        'device', 'serial', 'implant', 'url', 'website', 'ip_address',
+        'vehicle', 'vin', 'plate',
+        # Biometric
+        'fingerprint', 'retinal', 'voiceprint', 'biometric',
+        # Other
+        'trial', 'photo', 'image', 'unique_id'
     ]
     
     key_lower = key.lower()
-    # Also check for exact matches for assessment abbreviations and scan types
-    exact_matches = ['aiadl', 'smmse', 'iqcode', 'ace_iii', 'ace-iii', 'moca', 'mmse',
-                     'ct_scan', 'mri_scan', 'pet_scan', 'brain_scan', 'brain_scans',
-                     'neuropsychiatric_inventory', 'npi']
-    if key_lower in exact_matches:
-        return True
     
-    return any(keyword in key_lower for keyword in pii_keywords)
+    # Exclude provider/doctor names from anonymization
+    if any(provider in key_lower for provider in ['provider', 'doctor', 'physician', 'clinician', 'therapist']):
+        return False
+    
+    return any(keyword in key_lower for keyword in hipaa_keywords)
 
 
 def lambda_handler(event, context):
