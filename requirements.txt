@@ -1,6 +1,8 @@
-flask
-boto3
-pymysql
-sqlalchemy
-faker
-cryptography
+flask==2.3.3
+boto3==1.28.44
+pymysql==1.1.0
+sqlalchemy==2.0.20
+faker==19.3.1
+cryptography==41.0.3
+python-dotenv==1.0.0
+gunicorn==21.2.0

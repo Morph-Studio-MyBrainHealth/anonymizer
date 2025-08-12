@@ -10,6 +10,10 @@ import uuid
 import os
 from datetime import datetime
 from collections import OrderedDict
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Import your anonymizer modules
 from anonymizer import (anonymizer, de_anonymizer, anonymize_profile, 
@@ -18,7 +22,23 @@ from comprehend import detect_pii_data
 from db_methods import get_anonymization_statistics
 
 app = Flask(__name__)
-app.secret_key = 'your-secret-key-for-testing'
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', os.urandom(24))
+
+@app.route('/')
+def health_check():
+    return jsonify({
+        "status": "healthy",
+        "service": "anonymizer-api",
+        "version": "1.0.0",
+        "endpoints": [
+            "/anonymize",
+            "/deanonymize",
+            "/anonymize_json",
+            "/deanonymize_json",
+            "/detect",
+            "/stats"
+        ]
+    })
 
 # HTML Template
 HTML_TEMPLATE = '''
