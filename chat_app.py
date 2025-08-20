@@ -8,10 +8,15 @@ from flask import Flask, render_template_string, request, jsonify, session
 import json
 import uuid
 import os
-from datetime import datetime
+from datetime import datetime,timezone
+
 from collections import OrderedDict
 from dotenv import load_dotenv
-
+from presidio_analyzer import AnalyzerEngine
+from faker import Faker
+from faker.providers import BaseProvider
+from typing import Dict, List, Optional, Any
+from dataclasses import dataclass, asdict
 # Load environment variables
 load_dotenv()
 
@@ -955,6 +960,270 @@ def stats_endpoint():
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+# Configuration constants
+SESSIONS_FILE = "all_sessions.json"
+SUPPORTED_ENTITIES = {
+    "PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER", "CREDIT_CARD", 
+    "ADDRESS", "ZIP", "ORGANIZATION", "LOCATION"
+}
+
+@dataclass
+class SessionData:
+    """Data class for session information"""
+    fake_to_real_mapping: Dict[str, str]
+    original_text: str
+    anonymized_text: str
+    timestamp: str
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+class AnonymizerProvider(BaseProvider):
+    """Custom Faker provider for anonymization"""
+    
+    def anonymize_person(self, person_name: str) -> str:
+        return self.generator.name()
+    
+    def anonymize_email(self, email: str) -> str:
+        return self.generator.email()
+    
+    def anonymize_phone(self, phone: str) -> str:
+        return self.generator.phone_number()
+    
+    def anonymize_credit_card(self, credit_card: str) -> str:
+        return self.generator.credit_card_number()
+    
+    def anonymize_address(self, address: str) -> str:
+        return self.generator.address().replace("\n", ", ")
+    
+    def anonymize_zip(self, zip_code: str) -> str:
+        return self.generator.postcode()
+    
+    def anonymize_organization(self, organization: str) -> str:
+        return self.generator.company()
+    
+    def anonymize_location(self, location: str) -> str:
+        return self.generator.city()
+
+class SessionManager:
+    """Manages session storage and lifecycle"""
+    
+    def __init__(self, sessions_file: str):
+        self.sessions_file = sessions_file
+        self._sessions_cache: Dict[str, Dict[str, Any]] = {}
+        self._load_sessions()
+    
+    def _load_sessions(self) -> None:
+        """Load sessions from file"""
+        try:
+            if os.path.exists(self.sessions_file):
+                with open(self.sessions_file, 'r') as f:
+                    self._sessions_cache = json.load(f)
+            else:
+                self._sessions_cache = {}
+        except (json.JSONDecodeError, IOError):
+            self._sessions_cache = {}
+    
+    def _save_sessions(self) -> None:
+        """Save sessions to file"""
+        try:
+            with open(self.sessions_file, 'w') as f:
+                json.dump(self._sessions_cache, f, indent=2)
+        except IOError:
+            # Log error in production
+            pass
+    
+    def create_session(self, session_id: str, session_data: SessionData) -> None:
+        """Create a new session"""
+        self._sessions_cache[session_id] = session_data.to_dict()
+        self._save_sessions()
+    
+    def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Get session data by ID"""
+        return self._sessions_cache.get(session_id)
+    
+    def delete_session(self, session_id: str) -> None:
+        """Delete a session"""
+        if session_id in self._sessions_cache:
+            del self._sessions_cache[session_id]
+            self._save_sessions()
+
+class AnonymizationService:
+    """Handles text anonymization logic"""
+    
+    def __init__(self):
+        self.analyzer = AnalyzerEngine()
+        self.fake = Faker()
+        self.fake.add_provider(AnonymizerProvider)
+    
+    def _generate_fake_value(self, entity_type: str, original_value: str = "") -> str:
+        """Generate fake value for given entity type"""
+        mapping = {
+            "PERSON": lambda: self.fake.anonymize_person(original_value),
+            "EMAIL_ADDRESS": lambda: self.fake.anonymize_email(original_value),
+            "PHONE_NUMBER": lambda: self.fake.anonymize_phone(original_value),
+            "CREDIT_CARD": lambda: self.fake.anonymize_credit_card(original_value),
+            "ADDRESS": lambda: self.fake.anonymize_address(original_value),
+            "ZIP": lambda: self.fake.anonymize_zip(original_value),
+            "ORGANIZATION": lambda: self.fake.anonymize_organization(original_value),
+            "LOCATION": lambda: self.fake.anonymize_location(original_value)
+        }
+        return mapping.get(entity_type, lambda: f"<{entity_type}>")()
+    
+    def _create_fake_mapping(self, text: str, results: List) -> Dict[str, str]:
+        """Create mapping of fake values to real values"""
+        fake_to_real_mapping = {}
+        
+        for result in results:
+            real_value = text[result.start:result.end]
+            fake_value_generated = self._generate_fake_value(result.entity_type, real_value)
+            
+            # Ensure fake value is unique
+            while fake_value_generated in fake_to_real_mapping.values():
+                fake_value_generated = self._generate_fake_value(result.entity_type, real_value)
+            
+            fake_to_real_mapping[fake_value_generated] = real_value
+        
+        return fake_to_real_mapping
+    
+    def _replace_entities_in_text(self, text: str, results: List, fake_mapping: Dict[str, str]) -> str:
+        """Replace detected entities with fake values"""
+        anonymized_text = text
+        offset = 0
+        
+        for result in results:
+            real_value = text[result.start:result.end]
+            fake_value_generated = None
+            
+            # Find the fake value for this real value
+            for fake_val, real_val in fake_mapping.items():
+                if real_val == real_value:
+                    fake_value_generated = fake_val
+                    break
+            
+            if fake_value_generated:
+                # Calculate adjusted positions due to previous replacements
+                adjusted_start = result.start + offset
+                adjusted_end = result.end + offset
+                
+                # Replace the text
+                anonymized_text = (
+                    anonymized_text[:adjusted_start] + 
+                    fake_value_generated + 
+                    anonymized_text[adjusted_end:]
+                )
+                
+                # Update offset for next replacements
+                offset += len(fake_value_generated) - len(real_value)
+        
+        return anonymized_text
+    
+    def anonymize_text(self, text: str) -> tuple[str, Dict[str, str]]:
+        """Anonymize text and return anonymized text with mapping"""
+        # Analyze text for PII
+        results = self.analyzer.analyze(text=text, language="en")
+        
+        # Filter for supported entities
+        results = [r for r in results if r.entity_type in SUPPORTED_ENTITIES]
+        
+        # Sort results by start position to process in order
+        results.sort(key=lambda x: x.start)
+        
+        # Create mapping and anonymize
+        fake_mapping = self._create_fake_mapping(text, results)
+        anonymized_text = self._replace_entities_in_text(text, results, fake_mapping)
+        
+        return anonymized_text, fake_mapping
+    
+    def deanonymize_text(self, text: str, fake_mapping: Dict[str, str]) -> str:
+        """Deanonymize text using the mapping"""
+        for fake_val, real_val in fake_mapping.items():
+            text = text.replace(fake_val, real_val)
+        return text
+
+# Initialize services
+session_manager = SessionManager(SESSIONS_FILE)
+anonymization_service = AnonymizationService()
+
+@app.route("/v1/anonymize", methods=["POST"])
+def anonymize_text():
+    """Anonymize text endpoint"""
+    try:
+        data = request.get_json()
+        if not data or "text" not in data:
+            return jsonify({"error": "Missing 'text' field"}), 400
+        
+        text = data.get("text", "")
+        session_id = str(uuid.uuid4())
+        
+        # Anonymize the text
+        anonymized_text, fake_mapping = anonymization_service.anonymize_text(text)
+        
+        # Create session data
+        session_data = SessionData(
+            fake_to_real_mapping=fake_mapping,
+            original_text=text,
+            anonymized_text=anonymized_text,
+            timestamp=datetime.now(timezone.utc).isoformat()
+        )
+        
+        # Save session
+        session_manager.create_session(session_id, session_data)
+        
+        return jsonify({
+            "session_id": session_id,
+            "original_text": text,
+            "anonymized_text": anonymized_text,
+            "entities":fake_mapping
+        })
+    
+    except Exception as e:
+        return jsonify({"error": f"Anonymization failed: {str(e)}"}), 500
+
+@app.route("/v1/deanonymize", methods=["POST"])
+def deanonymize_text():
+    """Deanonymize text endpoint"""
+    try:
+        data = request.get_json()
+        if not data or "session_id" not in data:
+            return jsonify({"error": "Missing 'session_id' field"}), 400
+        
+        session_id = data.get("session_id")
+        session_data = session_manager.get_session(session_id)
+        
+        if not session_data:
+            return jsonify({"error": "Invalid session_id"}), 400
+        
+        # Deanonymize the text
+        original_text = anonymization_service.deanonymize_text(
+            session_data["anonymized_text"], 
+            session_data["fake_to_real_mapping"]
+        )
+        
+        # Remove session after deanonymize
+        session_manager.delete_session(session_id)
+        
+        return jsonify({"original_text": original_text})
+    
+    except Exception as e:
+        return jsonify({"error": f"Deanonymization failed: {str(e)}"}), 500
+
+@app.route("/v1/session/<session_id>", methods=["GET"])
+def get_session(session_id: str):
+    """Get session information endpoint"""
+    try:
+        session_data = session_manager.get_session(session_id)
+        
+        if not session_data:
+            return jsonify({"error": "Invalid session"}), 400
+        
+        return jsonify(session_data)
+    
+    except Exception as e:
+        return jsonify({"error": f"Session retrieval failed: {str(e)}"}), 500
+
+
 
 # This must be at the module level, not inside a function!
 if __name__ == '__main__':
