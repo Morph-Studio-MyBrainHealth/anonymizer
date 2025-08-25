@@ -13,6 +13,8 @@ from datetime import datetime,timezone
 from collections import OrderedDict
 from dotenv import load_dotenv
 from presidio_analyzer import AnalyzerEngine
+from zip_recognizer import ZipRecognizer
+from presidio_analyzer.recognizer_registry import RecognizerRegistry
 from faker import Faker
 from faker.providers import BaseProvider
 from typing import Dict, List, Optional, Any
@@ -1053,7 +1055,15 @@ class AnonymizationService:
     """Handles text anonymization logic"""
     
     def __init__(self):
-        self.analyzer = AnalyzerEngine()
+        # Initialize analyzer with custom recognizers
+        registry = RecognizerRegistry()
+        registry.load_predefined_recognizers()
+        
+        # Add custom ZIP recognizer
+       
+        registry.add_recognizer(ZipRecognizer())
+        
+        self.analyzer = AnalyzerEngine(registry=registry)
         self.fake = Faker()
         self.fake.add_provider(AnonymizerProvider)
     
@@ -1076,6 +1086,7 @@ class AnonymizationService:
         fake_to_real_mapping = {}
         
         for result in results:
+            
             real_value = text[result.start:result.end]
             fake_value_generated = self._generate_fake_value(result.entity_type, real_value)
             
@@ -1138,9 +1149,21 @@ class AnonymizationService:
     
     def deanonymize_text(self, text: str, fake_mapping: Dict[str, str]) -> str:
         """Deanonymize text using the mapping"""
-        for fake_val, real_val in fake_mapping.items():
-            text = text.replace(fake_val, real_val)
-        return text
+        deanonymized_text = text
+        
+        # Sort fake values by length (longest first) to avoid partial replacements
+        # This ensures "John Smith" gets replaced before "John" if both exist
+        sorted_fake_values = sorted(fake_mapping.keys(), key=len, reverse=True)
+        
+        for fake_val in sorted_fake_values:
+            real_val = fake_mapping[fake_val]
+            # Use word boundary replacement to avoid partial word matches
+            # This ensures we only replace complete words/phrases
+            import re
+            pattern = r'\b' + re.escape(fake_val) + r'\b'
+            deanonymized_text = re.sub(pattern, real_val, deanonymized_text)
+        
+        return deanonymized_text
 
 # Initialize services
 session_manager = SessionManager(SESSIONS_FILE)
@@ -1195,16 +1218,24 @@ def deanonymize_text():
         if not session_data:
             return jsonify({"error": "Invalid session_id"}), 400
         
-        # Deanonymize the text
-        original_text = anonymization_service.deanonymize_text(
-            session_data["anonymized_text"], 
+        # Get the text to deanonymize from request (e.g., OpenAI response)
+        text_to_deanonymize = data.get("text", "")
+        if not text_to_deanonymize:
+            return jsonify({"error": "Missing 'text' field to deanonymize"}), 400
+        
+        # Deanonymize the provided text using the session mapping
+        deanonymized_text = anonymization_service.deanonymize_text(
+            text_to_deanonymize, 
             session_data["fake_to_real_mapping"]
         )
         
         # Remove session after deanonymize
         session_manager.delete_session(session_id)
+
         
-        return jsonify({"original_text": original_text})
+        return jsonify({
+            "generated_text": deanonymized_text,
+        })
     
     except Exception as e:
         return jsonify({"error": f"Deanonymization failed: {str(e)}"}), 500
