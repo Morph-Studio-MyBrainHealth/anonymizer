@@ -1151,17 +1151,25 @@ class AnonymizationService:
         """Deanonymize text using the mapping"""
         deanonymized_text = text
         
-        # Sort fake values by length (longest first) to avoid partial replacements
-        # This ensures "John Smith" gets replaced before "John" if both exist
-        sorted_fake_values = sorted(fake_mapping.keys(), key=len, reverse=True)
-        
-        for fake_val in sorted_fake_values:
-            real_val = fake_mapping[fake_val]
-            # Use word boundary replacement to avoid partial word matches
-            # This ensures we only replace complete words/phrases
+        # First, try exact matches with word boundaries
+        for fake_val, real_val in fake_mapping.items():
             import re
             pattern = r'\b' + re.escape(fake_val) + r'\b'
-            deanonymized_text = re.sub(pattern, real_val, deanonymized_text)
+            if re.search(pattern, deanonymized_text):
+                deanonymized_text = re.sub(pattern, real_val, deanonymized_text)
+        
+        # Then try partial matches for any remaining fake values
+        for fake_val, real_val in fake_mapping.items():
+            # Split the fake value into words
+            fake_words = fake_val.split()
+            for word in fake_words:
+                # Only replace if the word is substantial (not just a single character)
+                if len(word) > 1:
+                    pattern = r'\b' + re.escape(word) + r'\b'
+                    # Check if this word appears in the text and is not part of another replacement
+                    if re.search(pattern, deanonymized_text):
+                        # If this word is found, replace it with the full real value
+                        deanonymized_text = re.sub(pattern, real_val, deanonymized_text)
         
         return deanonymized_text
 
