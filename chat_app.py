@@ -1149,11 +1149,6 @@ class AnonymizationService:
     
     def deanonymize_text(self, text: str, fake_mapping: Dict[str, str]) -> str:
         """Deanonymize text using the mapping"""
-<<<<<<< Updated upstream
-        for fake_val, real_val in fake_mapping.items():
-            text = text.replace(fake_val, real_val)
-        return text
-=======
         deanonymized_text = text
         
         # First, try exact matches with word boundaries
@@ -1177,7 +1172,6 @@ class AnonymizationService:
                         deanonymized_text = re.sub(pattern, real_val, deanonymized_text)
         
         return deanonymized_text
->>>>>>> Stashed changes
 
 # Initialize services
 session_manager = SessionManager(SESSIONS_FILE)
