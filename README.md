@@ -137,9 +137,7 @@ The service provides two main endpoints for anonymization and de-anonymization. 
 ### Basic Text Anonymization
 
 ```python
-import requests
-import json
-
+from anonymizer import anonymizer, de_anonymizer
 # Anonymize patient data
 original_text = """
 Name: Jane Doe
@@ -167,8 +165,7 @@ original = response.json()['generated_text']
 ### JSON Data Anonymization
 
 ```python
-import requests
-import json
+from anonymizer import anonymize_json, de_anonymize_json
 
 patient_data = {
     "patient_info": {
