@@ -127,11 +127,17 @@ python chat_app.py
 
 ## 📖 Usage Examples
 
+### API Endpoints
+
+The service provides two main endpoints for anonymization and de-anonymization. When running locally, the service is available at:
+
+- Anonymize: `http://localhost:5000/v1/anonymize`
+- De-anonymize: `http://localhost:5000/v1/deanonymize`
+
 ### Basic Text Anonymization
 
 ```python
 from anonymizer import anonymizer, de_anonymizer
-
 # Anonymize patient data
 original_text = """
 Name: Jane Doe
@@ -140,13 +146,20 @@ Diagnosis: Hypertension, Type 2 Diabetes
 Medications: Metoprolol 50mg daily
 """
 
-result = anonymizer("user123", "USER_ID", original_text)
-anonymized = json.loads(result['body'])['result']
-# Output: Name: Sarah Johnson, DOB: 05/23/1978, etc.
+# Anonymize text
+response = requests.post('http://localhost:5000/v1/anonymize', 
+    json={'text': original_text})
+result = response.json()
+anonymized_text = result['anonymized_text']
+session_id = result['session_id']  # Save this for de-anonymization
 
-# De-anonymize back to original
-result = de_anonymizer("user123", "USER_ID", anonymized)
-original = json.loads(result['body'])['result']
+# De-anonymize text (requires session_id from anonymization)
+response = requests.post('http://localhost:5000/v1/deanonymize',
+    json={
+        'session_id': session_id,
+        'text': anonymized_text
+    })
+original = response.json()['generated_text']
 ```
 
 ### JSON Data Anonymization
@@ -168,12 +181,19 @@ patient_data = {
 }
 
 # Anonymize JSON
-result = anonymize_json("user123", "USER_ID", patient_data)
-anonymized_data = json.loads(result['body'])['result']
+response = requests.post('http://localhost:5000/v1/anonymize', 
+    json={'text': json.dumps(patient_data)})
+result = response.json()
+anonymized_data = result['anonymized_text']
+session_id = result['session_id']  # Save this for de-anonymization
 
-# De-anonymize JSON
-result = de_anonymize_json("user123", "USER_ID", anonymized_data)
-original_data = json.loads(result['body'])['result']
+# De-anonymize JSON (requires session_id from anonymization)
+response = requests.post('http://localhost:5000/v1/deanonymize',
+    json={
+        'session_id': session_id,
+        'text': anonymized_data
+    })
+original_data = json.loads(response.json()['generated_text'])
 ```
 
 ### Profile Anonymization
